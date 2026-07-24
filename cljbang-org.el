@@ -1,0 +1,321 @@
+;;; cljbang-org.el --- Functional org-mode access for cljbang -*- lexical-binding: t; -*-
+
+;; Author: Kyle S Passarelli
+;; URL: https://github.com/kpassapk/cljbang-org
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "28.1") (cljbang "0.0.9") (org-ql "0.7"))
+;; Keywords: outlines, languages
+
+;;; Commentary:
+
+;; The namespace cljbang.org for cljbang: org files as Clojure data.
+;;
+;; cljbang resolves a qualified name like cljbang.org/headings to the
+;; munged elisp symbol cljbang-org-headings, so this package *is* the
+;; namespace; there is nothing else to register.
+;;
+;;   (require '[cljbang.org :as org])
+;;   (->> (org/headings "servers/box.org")
+;;        (filter #(contains? (:tags %) "project"))
+;;        (map :title))
+;;
+;; Queries return read-only snapshots: flat maps for headings, source
+;; blocks and file keywords, extracted at point with org's cheap APIs,
+;; never the raw org-element AST.  Positions in those maps (:begin
+;; :end) are provenance, not handles: effect functions (the ! names)
+;; take a selector and re-locate from scratch, so stale positions
+;; cannot corrupt an edit.  Effects edit the visiting buffer; save! is
+;; the separate, explicit step that touches disk.
+;;
+;; Transclusion expansion (:expand-transclusions? in query opts) is
+;; scoped: expanded for the duration of the query, removed again, the
+;; buffer left as found.  Effects refuse to run while it is active.
+
+;;; Code:
+
+(require 'org)
+(require 'ob-core)
+(require 'ob-tangle)
+(require 'seq)
+(require 'cljbang-core)
+
+;;; Buffer discipline
+
+(defvar-local cljbang-org--transcluded nil
+  "Non-nil while a query has transclusions expanded.
+Effects check this and refuse to edit, because positions in expanded
+text do not belong to the file.")
+
+(defun cljbang-org--buffer (file)
+  "The buffer visiting FILE, opening it if need be."
+  (let ((buf (find-file-noselect (expand-file-name file))))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'org-mode) (org-mode)))
+    buf))
+
+(defmacro cljbang-org--with-file (file &rest body)
+  "Run BODY in the buffer visiting FILE, widened, preserving point."
+  (declare (indent 1))
+  `(with-current-buffer (cljbang-org--buffer ,file)
+     (save-excursion
+       (save-restriction
+         (widen)
+         ,@body))))
+
+(defun cljbang-org--opt (opts key)
+  "Value of KEY in OPTS, a cljbang map or nil."
+  (and opts (cljbang-get opts key)))
+
+(defmacro cljbang-org--with-transclusions (expand &rest body)
+  "Run BODY, with transclusions expanded in the current buffer when EXPAND.
+Read-only from the file's point of view: the expansion is removed again
+and the buffer's modified flag restored, whatever BODY does."
+  (declare (indent 1))
+  `(if (not ,expand)
+       (progn ,@body)
+     (unless (require 'org-transclusion nil t)
+       (error "cljbang-org: :expand-transclusions? needs org-transclusion"))
+     (let ((cljbang-org--was-modified (buffer-modified-p)))
+       (setq cljbang-org--transcluded t)
+       (unwind-protect
+           (progn (org-transclusion-add-all)
+                  ,@body)
+         (org-transclusion-remove-all)
+         (setq cljbang-org--transcluded nil)
+         (set-buffer-modified-p cljbang-org--was-modified)))))
+
+;;; Extraction at point
+
+(defun cljbang-org--properties-at-point ()
+  "Drawer properties of the heading at point, as a map with keyword keys."
+  (let ((h (make-hash-table :test #'equal)))
+    (dolist (kv (org-entry-properties nil 'standard) h)
+      (puthash (intern (concat ":" (car kv))) (cdr kv) h))))
+
+(defun cljbang-org--title-at-point ()
+  (substring-no-properties (or (nth 4 (org-heading-components)) "")))
+
+(defun cljbang-org--heading-at-point ()
+  "Heading at point as a map: :title :level :tags :todo :priority
+:properties :begin :end :file."
+  (let* ((comps (org-heading-components))
+         (priority (nth 3 comps)))
+    (cljbang-hash-map
+     :title (cljbang-org--title-at-point)
+     :level (nth 0 comps)
+     :todo (nth 2 comps)
+     :priority (and priority (char-to-string priority))
+     :tags (apply #'cljbang-hash-set
+                  (mapcar #'substring-no-properties (org-get-tags nil t)))
+     :properties (cljbang-org--properties-at-point)
+     :begin (point)
+     :end (save-excursion (org-end-of-subtree t t) (point))
+     :file (buffer-file-name))))
+
+;;; Selectors: how an effect or point query finds its heading
+
+(defun cljbang-org--selector-pred (selector)
+  "Predicate of no arguments, run with point at a heading, for SELECTOR.
+SELECTOR is a title string, or a map with :custom-id, or :title and
+optionally :level.  A heading map returned by a query works: its
+CUSTOM_ID property wins, else its title and level."
+  (cond
+   ((stringp selector)
+    (lambda () (equal selector (cljbang-org--title-at-point))))
+   ((hash-table-p selector)
+    (let* ((custom-id (or (cljbang-get selector :custom-id)
+                          (let ((props (cljbang-get selector :properties)))
+                            (and props (cljbang-get props :CUSTOM_ID)))))
+           (title (cljbang-get selector :title))
+           (level (cljbang-get selector :level)))
+      (cond
+       (custom-id
+        (lambda () (equal custom-id (org-entry-get (point) "CUSTOM_ID"))))
+       (title
+        (lambda ()
+          (and (equal title (cljbang-org--title-at-point))
+               (or (null level)
+                   (equal level (nth 0 (org-heading-components)))))))
+       (t (error "cljbang-org: selector map needs :title or :custom-id")))))
+   (t (error "cljbang-org: bad selector %S" selector))))
+
+(defun cljbang-org--locate-first (pred)
+  "Position of the first heading satisfying PRED, or nil."
+  (let (found)
+    (org-map-entries
+     (lambda () (when (and (not found) (funcall pred))
+                  (setq found (point)))))
+    found))
+
+;;; Queries
+
+;;;###autoload
+(defun cljbang-org-headings (file &optional opts)
+  "All headings in FILE as a vector of heading maps.
+OPTS: {:expand-transclusions? true} to scan transcluded content too."
+  (cljbang-org--with-file file
+    (cljbang-org--with-transclusions
+        (cljbang-org--opt opts :expand-transclusions?)
+      (let (acc)
+        (org-map-entries
+         (lambda () (push (cljbang-org--heading-at-point) acc)))
+        (apply #'vector (nreverse acc))))))
+
+;;;###autoload
+(defun cljbang-org-heading (file selector)
+  "First heading in FILE matching SELECTOR, as a map, or nil."
+  (cljbang-org--with-file file
+    (let ((pos (cljbang-org--locate-first
+                (cljbang-org--selector-pred selector))))
+      (when pos
+        (goto-char pos)
+        (cljbang-org--heading-at-point)))))
+
+;;;###autoload
+(defun cljbang-org-keywords (file)
+  "File keywords (#+KEY: value lines) of FILE.
+A map of lowercase keyword keys to vectors of values, in file order, so
+repeated keywords like #+TARGET: all arrive."
+  (cljbang-org--with-file file
+    (goto-char (point-min))
+    (let (acc)
+      (while (re-search-forward
+              "^[ \t]*#\\+\\([[:alnum:]_-]+\\):[ \t]*\\(.*?\\)[ \t]*$" nil t)
+        (let ((key (downcase (match-string-no-properties 1)))
+              (val (match-string-no-properties 2)))
+          (unless (string-match-p "\\`\\(begin\\|end\\)_" key)
+            (push val (alist-get key acc nil nil #'equal)))))
+      (let ((h (make-hash-table :test #'equal)))
+        (pcase-dolist (`(,k . ,vs) acc)
+          (puthash (intern (concat ":" k)) (apply #'vector (nreverse vs)) h))
+        h))))
+
+;;;###autoload
+(defun cljbang-org-properties (file selector)
+  "Drawer properties of the first heading in FILE matching SELECTOR, or nil."
+  (cljbang-org--with-file file
+    (let ((pos (cljbang-org--locate-first
+                (cljbang-org--selector-pred selector))))
+      (when pos
+        (goto-char pos)
+        (cljbang-org--properties-at-point)))))
+
+;;;###autoload
+(defun cljbang-org-entry-get (file selector prop)
+  "Property PROP of the first heading in FILE matching SELECTOR, or nil.
+PROP is a string or a keyword: :CUSTOM_ID reads CUSTOM_ID."
+  (cljbang-org--with-file file
+    (let ((pos (cljbang-org--locate-first
+                (cljbang-org--selector-pred selector)))
+          (name (if (keywordp prop) (substring (symbol-name prop) 1) prop)))
+      (when pos (org-entry-get pos name)))))
+
+;;; Source blocks
+
+(defun cljbang-org--block-at-point ()
+  "Src block at point as a map: :language :name :headers :body :begin
+:end :file.  :headers is the resolved header-arg map, defaults included,
+so an untangled block carries :tangle \"no\"."
+  (let* ((info (org-babel-get-src-block-info 'light))
+         (headers (let ((h (make-hash-table :test #'equal)))
+                    (dolist (kv (nth 2 info) h)
+                      (puthash (car kv) (cdr kv) h)))))
+    (cljbang-hash-map
+     :language (nth 0 info)
+     :name (nth 4 info)
+     :headers headers
+     :body (nth 1 info)
+     :begin (point)
+     :end (save-excursion
+            (re-search-forward "^[ \t]*#\\+end_src" nil t)
+            (line-end-position))
+     :file (buffer-file-name))))
+
+(defun cljbang-org--collect-blocks ()
+  "Src blocks in the accessible portion, as a vector of block maps."
+  (let (acc)
+    (org-babel-map-src-blocks nil
+      (goto-char beg-block)
+      (push (cljbang-org--block-at-point) acc))
+    (apply #'vector (nreverse acc))))
+
+;;;###autoload
+(defun cljbang-org-src-blocks (file &optional opts)
+  "Src blocks in FILE as a vector of block maps.
+OPTS: {:under selector} restricts to the first matching subtree;
+{:expand-transclusions? true} scans transcluded content too."
+  (cljbang-org--with-file file
+    (let ((under (cljbang-org--opt opts :under))
+          (expand (cljbang-org--opt opts :expand-transclusions?)))
+      (if (not under)
+          (cljbang-org--with-transclusions expand
+            (cljbang-org--collect-blocks))
+        (let ((pos (cljbang-org--locate-first
+                    (cljbang-org--selector-pred under))))
+          (if (not pos)
+              []
+            (goto-char pos)
+            (save-restriction
+              (org-narrow-to-subtree)
+              (cljbang-org--with-transclusions expand
+                (cljbang-org--collect-blocks)))))))))
+
+;;;###autoload
+(defun cljbang-org-tangle-targets (blocks)
+  "Distinct :tangle targets of BLOCKS, a collection of block maps.
+Pure: drops blocks with no target (:tangle \"no\" or absent), keeps
+file order."
+  (apply #'vector
+         (seq-uniq
+          (delq nil
+                (mapcar (lambda (b)
+                          (let ((tangle (cljbang-get
+                                         (cljbang-get b :headers) :tangle)))
+                            (unless (member tangle '(nil "no")) tangle)))
+                        (append blocks nil))))))
+
+;;; Effects
+
+(defun cljbang-org--check-editable ()
+  (when cljbang-org--transcluded
+    (error "cljbang-org: refusing to edit while transclusions are expanded")))
+
+;;;###autoload
+(defun cljbang-org-cut-subtree! (file selector)
+  "Cut every subtree in FILE matching SELECTOR; the count cut.
+Edits the visiting buffer only: `cljbang-org-save!' persists,
+`cljbang-org-revert!' discards.  Each cut re-locates from the top, so
+positions never go stale."
+  (cljbang-org--with-file file
+    (cljbang-org--check-editable)
+    (let ((pred (cljbang-org--selector-pred selector))
+          (count 0)
+          pos)
+      (while (setq pos (cljbang-org--locate-first pred))
+        (goto-char pos)
+        (org-cut-subtree)
+        (setq count (1+ count)))
+      count)))
+
+;;;###autoload
+(defun cljbang-org-save! (file)
+  "Save FILE's visiting buffer if modified; the file name."
+  (with-current-buffer (cljbang-org--buffer file)
+    (when (buffer-modified-p) (save-buffer))
+    (buffer-file-name)))
+
+;;;###autoload
+(defun cljbang-org-revert! (file)
+  "Reload FILE from disk, discarding buffer edits; the file name."
+  (with-current-buffer (cljbang-org--buffer file)
+    (revert-buffer :ignore-auto :noconfirm)
+    (buffer-file-name)))
+
+;;;###autoload
+(defun cljbang-org-tangle! (file)
+  "Tangle FILE; the tangled file names as a vector."
+  (cljbang-org--with-file file
+    (apply #'vector (org-babel-tangle))))
+
+(provide 'cljbang-org)
+;;; cljbang-org.el ends here

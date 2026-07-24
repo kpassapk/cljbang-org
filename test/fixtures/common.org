@@ -1,0 +1,10 @@
+#+TITLE: Common
+
+* Shared Quadlets
+
+** shared.container
+
+#+begin_src systemd :tangle ~/.config/containers/systemd/shared.container
+[Container]
+Image=shared
+#+end_src

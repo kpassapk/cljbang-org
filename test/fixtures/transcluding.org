@@ -1,0 +1,15 @@
+#+TITLE: Transcluding
+
+* Quadlets
+:PROPERTIES:
+:CUSTOM_ID: quadlets
+:END:
+
+#+transclude: [[file:common.org::*Shared Quadlets][Shared (common)]]
+
+** local.container
+
+#+begin_src systemd :tangle ~/.config/containers/systemd/local.container
+[Container]
+Image=local
+#+end_src

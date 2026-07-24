@@ -1,0 +1,45 @@
+#+TITLE: Test server
+#+TARGET: .. (project)
+#+TARGET: /ssh:app@example: (server)
+
+* Quadlets
+:PROPERTIES:
+:CUSTOM_ID: quadlets
+:END:
+
+** caddy.container
+
+#+begin_src systemd :tangle ~/.config/containers/systemd/caddy.container
+[Container]
+Image=caddy
+#+end_src
+
+** caddy_data.volume
+
+#+begin_src systemd :tangle ~/.config/containers/systemd/caddy_data.volume
+[Volume]
+#+end_src
+
+** notes
+
+#+begin_src sh :tangle no
+echo skipped
+#+end_src
+
+#+name: untangled
+#+begin_src sh
+echo no tangle header
+#+end_src
+
+* Demo                                                              :project:
+
+** aly-odoo-16-demo.container
+
+#+begin_src systemd :tangle ~/.config/containers/systemd/aly-odoo-16-demo.container
+[Container]
+Image=demo
+#+end_src
+
+* TODO State checks                                                  :server:
+
+Some prose.
