@@ -204,5 +204,34 @@ Kills any visiting buffer and deletes the dir afterwards."
     ;; and the query left the file's buffer unmodified
     (should-not (buffer-modified-p (find-buffer-visiting file)))))
 
+;;; Coercion
+
+(ert-deftest cljbang-org-test-lines-from-text ()
+  (should (equal ["a" "b"] (cljbang-org-test--eval "(cljbang.org/lines \"a\\nb\")"))))
+
+(ert-deftest cljbang-org-test-lines-from-vector ()
+  (should (equal ["a" "b"] (cljbang-org-test--eval "(cljbang.org/lines [\"a\" \"b\"])"))))
+
+(ert-deftest cljbang-org-test-lines-from-table ()
+  "A one-column table, the shape a :var naming a shell block arrives in."
+  (should (equal ["a" "b"]
+                 (cljbang-org-test--eval "(cljbang.org/lines [[\"a\"] [\"b\"]])"))))
+
+(ert-deftest cljbang-org-test-lines-drops-blanks-and-pads ()
+  (should (equal ["a" "b"]
+                 (cljbang-org-test--eval "(cljbang.org/lines \"a\\n\\n  b  \\n\")"))))
+
+(ert-deftest cljbang-org-test-lines-of-nothing ()
+  (should (equal [] (cljbang-org-test--eval "(cljbang.org/lines nil)")))
+  (should (equal [] (cljbang-org-test--eval "(cljbang.org/lines \"\")"))))
+
+(ert-deftest cljbang-org-test-lines-shapes-agree ()
+  "Every shape the same list of names can arrive in coerces alike."
+  (should (cljbang-org-test--eval
+           "(apply = (map cljbang.org/lines
+                          [\"caddy.service\\ndbus.service\"
+                           [\"caddy.service\" \"dbus.service\"]
+                           [[\"caddy.service\"] [\"dbus.service\"]]]))")))
+
 (provide 'cljbang-org-test)
 ;;; cljbang-org-test.el ends here

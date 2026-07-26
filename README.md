@@ -101,6 +101,36 @@ A **heading map** has `:title :level :tags :todo :priority :properties :begin
 :file`, where `:headers` is the resolved header-arg map with defaults
 included — an untangled block carries `:tangle "no"`.
 
+### Coercion — `cljbang.org`
+
+| Function | Returns |
+|---|---|
+| `(lines x)` | `x` as a vector of non-blank, trimmed lines, whatever shape it arrived in |
+
+The same list of names reaches a block as text, as a vector of strings, or as a
+table — a vector of one-element rows — depending on how the block that produced
+it was run, and Org does not say which. A `:var` naming another block **re-runs**
+that block with `:results none`, which overrides the block's own `:results`, so
+a shell block that displays as text is handed over as a table. The visible
+`#+RESULTS:` does not tell you what the var will hold.
+
+```clojure
+(org/lines "a\nb")        ;=> ["a" "b"]
+(org/lines ["a" "b"])     ;=> ["a" "b"]
+(org/lines [["a"] ["b"]]) ;=> ["a" "b"]
+```
+
+So a drift check can stop caring:
+
+```org
+#+begin_src clj! :var running=running-services expected=running-services-expected
+  (let [server (set (org/lines running))
+        repo   (set (org/lines expected))]
+    {:only-server (set/difference server repo)
+     :only-repo   (set/difference repo server)})
+#+end_src
+```
+
 ### Queries — `cljbang.org.ql`
 
 | Function | Returns |

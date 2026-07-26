@@ -41,6 +41,7 @@
 (require 'org)
 (require 'ob-core)
 (require 'ob-tangle)
+(require 'subr-x)
 (require 'cljbang-core)
 
 ;;; Buffer discipline
@@ -161,6 +162,37 @@ language: it stays this small on purpose.  To search, filter the data
     (org-map-entries
      (lambda () (when (funcall pred) (push (point) acc))))
     (nreverse acc)))
+
+;;; Coercion
+
+(defun cljbang-org--lines (x)
+  "Lines of X as a list, flattening nested sequences."
+  (cond ((stringp x)
+         (let (acc)
+           (dolist (line (split-string x "\n"))
+             (let ((line (string-trim line)))
+               (unless (string-empty-p line) (push line acc))))
+           (nreverse acc)))
+        ((sequencep x)
+         (apply #'append (mapcar #'cljbang-org--lines (append x nil))))
+        (t (list (format "%s" x)))))
+
+;;;###autoload
+(defun cljbang-org-lines (x)
+  "X as a vector of non-blank, trimmed lines, whatever shape it arrived in.
+
+The same list of names reaches a block as text, as a vector of
+strings, or as a table -- a vector of one-element rows -- depending
+on how the block that produced it was run.  Org does not say which:
+a :var naming another block re-runs that block with :results none,
+which overrides the block's own :results, so a shell block that
+displays as text is handed over as a table.  Coerce and the caller
+stops caring.
+
+  (org/lines \"a\\nb\")          ;=> [\"a\" \"b\"]
+  (org/lines [\"a\" \"b\"])       ;=> [\"a\" \"b\"]
+  (org/lines [[\"a\"] [\"b\"]])   ;=> [\"a\" \"b\"]"
+  (apply #'vector (cljbang-org--lines x)))
 
 ;;; Queries
 
