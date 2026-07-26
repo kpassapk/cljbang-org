@@ -35,16 +35,17 @@ Say `server.org` tangles some files, and pulls one more in from
 another file via transclusion:
 
 ```org
-* Foo
+* Quadlets
 
-#+begin_src text :tangle foo.txt
-Foo contents
+#+begin_src systemd :tangle foo.container
+[Unit]
+...
 #+end_src
 
-#+transclude: [[file:common.org::*Bar][Bar]]  ; provides bar.txt
+#+transclude: [[file:common.org::*Bar][Bar]]  ; provides bar.container
 ```
 
-Suppose we want to get a list of the files being under "Foo", transclusions included, in raw
+Suppose we want to get a list of the files being tangled under "Quadlets", transclusions included, in raw
 elisp — not the easiest API :)
 
 ```elisp
@@ -81,32 +82,6 @@ The result would look almost the same as the original elisp, but with some `el/`
        (remove #{"no"})
        (map vector))
 ```
-
-## Design
-
-- Queries return flat read-only maps.
-
-- Every effect function (the `!` names) takes a selector and searches for its
-  heading fresh, so stale positions cannot corrupt an edit.
-
-- Effects modify the visiting buffer only. `save!` is the separate, explicit
-  step that touches disk; `revert!` discards buffer edits.
-
-- **The library adds no query language.** A selector says *which heading I
-  mean*; filtering is Clojure's job over the data `headings` returns, and
-  searching is org-ql's job through `cljbang.org.ql`. Nothing here duplicates
-  what `filter` already does.
-
-**Transclusion expansion is scoped.** Passing `{:expand-transclusions? true}`
-to a query expands transclusions for the duration of that query, removes them
-again, and leaves the buffer as found — modified flag included. Effects refuse
-to run while an expansion is active, because positions in expanded text do not
-belong to the file.
-
-**The package is the namespace.** cljbang resolves a qualified name like
-`cljbang.org/headings` to the munged elisp symbol `cljbang-org-headings`, so
-`cljbang-org.el` *is* the `cljbang.org` namespace — there is nothing else to
-register. Likewise `cljbang-org-ql.el` is `cljbang.org.ql`.
 
 ## API
 
@@ -166,6 +141,21 @@ Selectors will not grow `:tags`, `:todo` or regexp matching. To find headings,
 | `(save! file)` | saves the visiting buffer if modified |
 | `(revert! file)` | reloads from disk, discarding buffer edits |
 | `(tangle! file)` | tangles the file; returns the tangled file names |
+
+## Notes
+
+- Queries return flat read-only maps.
+
+- Every effect function (the `!` names) takes a selector and searches for its
+  heading fresh, so stale positions cannot corrupt an edit.
+
+- Effects modify the visiting buffer only. use `save!` is the separate, explicit
+  step that touches disk; `revert!` discards buffer edits.
+
+- Passing `{:expand-transclusions? true}` to a query expands transclusions for 
+  the duration of that query, removes them again, and leaves the buffer as found. 
+  Effects refuse to run while an expansion is active, because positions in expanded 
+  text do not belong to the file.
 
 ## Installing
 
