@@ -1,9 +1,8 @@
 # cljbang-org
 
-Org files as Clojure data, for [cljbang.el][cljbang]. Query headings, source
-blocks and keywords with Clojure's sequence functions; edit with a small set of
-explicit effect functions. Integrates [org-ql][org-ql] for queries and
-[org-transclusion][org-transclusion] for included content.
+Org mode as Clojure data for [cljbang.el][cljbang].
+
+This library lets you query and edit org files with a more clojure-friendly API. It optionally integrates with [org-ql][org-ql] and [org-transclusion][org-transclusion].
 
 [cljbang]: https://github.com/kpassapk/cljbang.el
 [org-ql]: https://github.com/alphapapa/org-ql
@@ -13,43 +12,39 @@ explicit effect functions. Integrates [org-ql][org-ql] for queries and
 
 [Org][org-syntax] is an excellent, widely-used, information-dense format. If
 you want to parse org files or make small edits from scripts (construct
-agendas, flip TODO states, collect source code blocks), there are a few
-options:
+agendas, flip `TODO` states), you have a few options:
 
-1. Regular expressions and freeform text edits. Gets complicated quickly, and
+1. Use regular expressions and freeform text edits. This gets complicated quickly, and
    can produce invalid syntax.
 
 2. Embed tree-sitter. Robust, and independent of Emacs, but takes some
-   experience — and editing support is unclear.
+   experience. Not sure about editing.
 
 3. Use elisp: `org` and `org-ql` together provide an extensive API. They use
    regular expressions internally, but at least you don't see them.
 
-This library takes the third approach and puts a functional face on it: you
-write Clojure — threading macros, `map`, `filter` — over plain data extracted
-from org buffers. Side-effectful functions always end in `!`.
+This library takes the third approach, and provides a functional interface
+over the elisp API. This makes it easier to write Clojure — threading macros, `map`, `filter` 
+— over plain data extracted from org buffers. Side-effectful functions always end in `!`.
 
 [org-syntax]: https://orgmode.org/worg/org-syntax.html
 
 ## Example
 
-Say `server.org` tangles some quadlet files, and pulls one more in from
+Say `server.org` tangles some files, and pulls one more in from
 another file via transclusion:
 
 ```org
-* Quadlets
+* Foo
 
-** caddy.container
-
-#+begin_src systemd :tangle ~/.config/containers/systemd/caddy.container
-[Container]
-Image=caddy
+#+begin_src text :tangle foo.txt
+Foo contents
 #+end_src
 
-#+transclude: [[file:common.org::*Qux][Qux]]  ; provides qux.container
+#+transclude: [[file:common.org::*Bar][Bar]]  ; provides bar.txt
 ```
 
-Listing every tangle target under "Quadlets", transclusions included, in raw
+Suppose we want to get a list of the files being under "Foo", transclusions included, in raw
 elisp — not the easiest API :)
 
 ```elisp
@@ -71,34 +66,36 @@ elisp — not the easiest API :)
   (message "%s" (string-join (delete-dups targets) "\n")))
 ```
 
-The same query with cljbang-org:
+If you tried to use `cljbang` directly, things would not get much better. There is just too much mutation going on. 
+The result would look almost the same as the original elisp, but with some `el/` and `el!` thrown in.
+
+`cljbang.org.ql` provides a `src-blocks` function that returns data structures, which makes this query easier to express:
 
 ```clj
-(require '[clojure.string :as str]
-         '[cljbang.org :as org]
-         '[cljbang.org.ql :as ql])
+  (require '[cljbang.org.ql :as ql])
 
-(->> (ql/src-blocks "server.org"
-                    '(and (heading "Quadlets") (level 1))
-                    {:expand-transclusions? true})
-     org/tangle-targets
-     (str/join "\n")
-     println)
+  (->> (ql/src-blocks "servers/aly-2602-suite.org"
+                      '(and (heading "Quadlets") (level 1))
+                      {:expand-transclusions? true})
+       (keep (comp :tangle :headers))
+       (remove #{"no"})
+       (map vector))
 ```
 
 ## Design
 
-**Queries return snapshots, not handles.** Headings, source blocks and file
-keywords arrive as flat read-only maps, extracted at point with org's cheap
-APIs — never the raw org-element AST. The `:begin` and `:end` positions in
-those maps are provenance, not handles: they tell you where a thing was found,
-and nothing trusts them afterwards.
+- Queries return flat read-only maps.
 
-**Effects re-locate from scratch.** Every effect function (the `!` names)
-takes a *selector* and searches for its heading fresh, so stale positions
-cannot corrupt an edit. Effects modify the visiting buffer only; `save!` is
-the separate, explicit step that touches disk, and `revert!` discards buffer
-edits.
+- Every effect function (the `!` names) takes a selector and searches for its
+  heading fresh, so stale positions cannot corrupt an edit.
+
+- Effects modify the visiting buffer only. `save!` is the separate, explicit
+  step that touches disk; `revert!` discards buffer edits.
+
+- **The library adds no query language.** A selector says *which heading I
+  mean*; filtering is Clojure's job over the data `headings` returns, and
+  searching is org-ql's job through `cljbang.org.ql`. Nothing here duplicates
+  what `filter` already does.
 
 **Transclusion expansion is scoped.** Passing `{:expand-transclusions? true}`
 to a query expands transclusions for the duration of that query, removes them
@@ -118,12 +115,8 @@ register. Likewise `cljbang-org-ql.el` is `cljbang.org.ql`.
 | Function | Returns |
 |---|---|
 | `(headings file & [opts])` | every heading in the file, as a vector of heading maps |
-| `(heading file selector)` | first heading matching the selector, or nil |
 | `(keywords file)` | file keywords (`#+KEY: value` lines) as a map of lowercase keyword to vector of values, so repeated keywords like `#+TARGET:` all arrive |
-| `(properties file selector)` | drawer properties of the first matching heading |
-| `(entry-get file selector prop)` | one property of the first matching heading; `prop` is a string or keyword |
-| `(src-blocks file & [opts])` | source blocks as a vector of block maps; `{:under selector}` restricts to a subtree |
-| `(tangle-targets blocks)` | pure: distinct `:tangle` targets of a collection of block maps, in file order, `"no"` and absent dropped |
+| `(src-blocks file & [opts])` | source blocks as a vector of block maps; `{:under selector}` restricts to every matching subtree |
 
 Query opts also accept `{:expand-transclusions? true}` to scan transcluded
 content.
@@ -152,6 +145,18 @@ Anywhere a `selector` is expected, pass:
 - `{:custom-id "quadlets"}` — matches on the `CUSTOM_ID` property
 - `{:title "Quadlets" :level 1}` — `:level` optional
 - a heading map returned by a query — its `CUSTOM_ID` wins, else title and level
+
+Every map returned by `ql/select`  is a selector.
+
+```clj
+(->> (ql/select f '(and (todo "DONE") (tags "archive")))
+     (map #(org/cut-subtree! f %))
+     doall)
+(org/save! f)
+```
+
+Selectors will not grow `:tags`, `:todo` or regexp matching. To find headings,
+`filter` over `(org/headings f)` or write an org-ql query.
 
 ### Effects — `cljbang.org`
 

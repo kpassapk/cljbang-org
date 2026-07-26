@@ -3,7 +3,7 @@
 ;; Author: Kyle S Passarelli
 ;; URL: https://github.com/kpassapk/cljbang-org
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (cljbang "0.0.9") (org-ql "0.7"))
+;; Package-Requires: ((emacs "28.1") (cljbang "0.0.9"))
 ;; Keywords: outlines, languages
 
 ;;; Commentary:
@@ -27,6 +27,11 @@
 ;; cannot corrupt an edit.  Effects edit the visiting buffer; save! is
 ;; the separate, explicit step that touches disk.
 ;;
+;; A selector names a heading you already mean; it is a reference, not
+;; a search.  Selectors deliberately do not grow query features (no
+;; :tags, no :todo, no regexps): filtering is Clojure's job over the
+;; data `headings' returns, or org-ql's job via cljbang.org.ql.
+;;
 ;; Transclusion expansion (:expand-transclusions? in query opts) is
 ;; scoped: expanded for the duration of the query, removed again, the
 ;; buffer left as found.  Effects refuse to run while it is active.
@@ -36,7 +41,6 @@
 (require 'org)
 (require 'ob-core)
 (require 'ob-tangle)
-(require 'seq)
 (require 'cljbang-core)
 
 ;;; Buffer discipline
@@ -112,13 +116,17 @@ and the buffer's modified flag restored, whatever BODY does."
      :end (save-excursion (org-end-of-subtree t t) (point))
      :file (buffer-file-name))))
 
-;;; Selectors: how an effect or point query finds its heading
+;;; Selectors: how an effect names the heading it means
 
 (defun cljbang-org--selector-pred (selector)
   "Predicate of no arguments, run with point at a heading, for SELECTOR.
 SELECTOR is a title string, or a map with :custom-id, or :title and
 optionally :level.  A heading map returned by a query works: its
-CUSTOM_ID property wins, else its title and level."
+CUSTOM_ID property wins, else its title and level.
+
+A selector is a reference to a heading you already mean, not a query
+language: it stays this small on purpose.  To search, filter the data
+`cljbang-org-headings' returns, or use cljbang.org.ql."
   (cond
    ((stringp selector)
     (lambda () (equal selector (cljbang-org--title-at-point))))
@@ -147,6 +155,13 @@ CUSTOM_ID property wins, else its title and level."
                   (setq found (point)))))
     found))
 
+(defun cljbang-org--locate-all (pred)
+  "Positions of every heading satisfying PRED, in file order."
+  (let (acc)
+    (org-map-entries
+     (lambda () (when (funcall pred) (push (point) acc))))
+    (nreverse acc)))
+
 ;;; Queries
 
 ;;;###autoload
@@ -160,16 +175,6 @@ OPTS: {:expand-transclusions? true} to scan transcluded content too."
         (org-map-entries
          (lambda () (push (cljbang-org--heading-at-point) acc)))
         (apply #'vector (nreverse acc))))))
-
-;;;###autoload
-(defun cljbang-org-heading (file selector)
-  "First heading in FILE matching SELECTOR, as a map, or nil."
-  (cljbang-org--with-file file
-    (let ((pos (cljbang-org--locate-first
-                (cljbang-org--selector-pred selector))))
-      (when pos
-        (goto-char pos)
-        (cljbang-org--heading-at-point)))))
 
 ;;;###autoload
 (defun cljbang-org-keywords (file)
@@ -189,26 +194,6 @@ repeated keywords like #+TARGET: all arrive."
         (pcase-dolist (`(,k . ,vs) acc)
           (puthash (intern (concat ":" k)) (apply #'vector (nreverse vs)) h))
         h))))
-
-;;;###autoload
-(defun cljbang-org-properties (file selector)
-  "Drawer properties of the first heading in FILE matching SELECTOR, or nil."
-  (cljbang-org--with-file file
-    (let ((pos (cljbang-org--locate-first
-                (cljbang-org--selector-pred selector))))
-      (when pos
-        (goto-char pos)
-        (cljbang-org--properties-at-point)))))
-
-;;;###autoload
-(defun cljbang-org-entry-get (file selector prop)
-  "Property PROP of the first heading in FILE matching SELECTOR, or nil.
-PROP is a string or a keyword: :CUSTOM_ID reads CUSTOM_ID."
-  (cljbang-org--with-file file
-    (let ((pos (cljbang-org--locate-first
-                (cljbang-org--selector-pred selector)))
-          (name (if (keywordp prop) (substring (symbol-name prop) 1) prop)))
-      (when pos (org-entry-get pos name)))))
 
 ;;; Source blocks
 
@@ -242,37 +227,23 @@ so an untangled block carries :tangle \"no\"."
 ;;;###autoload
 (defun cljbang-org-src-blocks (file &optional opts)
   "Src blocks in FILE as a vector of block maps.
-OPTS: {:under selector} restricts to the first matching subtree;
-{:expand-transclusions? true} scans transcluded content too."
+OPTS: {:under selector} restricts to every matching subtree, in file
+order; {:expand-transclusions? true} scans transcluded content too."
   (cljbang-org--with-file file
     (let ((under (cljbang-org--opt opts :under))
           (expand (cljbang-org--opt opts :expand-transclusions?)))
       (if (not under)
           (cljbang-org--with-transclusions expand
             (cljbang-org--collect-blocks))
-        (let ((pos (cljbang-org--locate-first
-                    (cljbang-org--selector-pred under))))
-          (if (not pos)
-              []
-            (goto-char pos)
-            (save-restriction
-              (org-narrow-to-subtree)
-              (cljbang-org--with-transclusions expand
-                (cljbang-org--collect-blocks)))))))))
-
-;;;###autoload
-(defun cljbang-org-tangle-targets (blocks)
-  "Distinct :tangle targets of BLOCKS, a collection of block maps.
-Pure: drops blocks with no target (:tangle \"no\" or absent), keeps
-file order."
-  (apply #'vector
-         (seq-uniq
-          (delq nil
-                (mapcar (lambda (b)
-                          (let ((tangle (cljbang-get
-                                         (cljbang-get b :headers) :tangle)))
-                            (unless (member tangle '(nil "no")) tangle)))
-                        (append blocks nil))))))
+        (apply #'vconcat
+               (mapcar (lambda (pos)
+                         (goto-char pos)
+                         (save-restriction
+                           (org-narrow-to-subtree)
+                           (cljbang-org--with-transclusions expand
+                             (cljbang-org--collect-blocks))))
+                       (cljbang-org--locate-all
+                        (cljbang-org--selector-pred under))))))))
 
 ;;; Effects
 
@@ -309,6 +280,10 @@ positions never go stale."
   "Reload FILE from disk, discarding buffer edits; the file name."
   (with-current-buffer (cljbang-org--buffer file)
     (revert-buffer :ignore-auto :noconfirm)
+    ;; `revert-buffer' swaps the text out from under org-element's cache,
+    ;; which then never converges: the next scan of the buffer spins.
+    ;; Throw the cache away, since every byte it described is gone.
+    (when (fboundp 'org-element-cache-reset) (org-element-cache-reset))
     (buffer-file-name)))
 
 ;;;###autoload

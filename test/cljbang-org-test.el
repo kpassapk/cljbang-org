@@ -23,6 +23,27 @@
   "Evaluate Clojure SRC, a format string filled with ARGS."
   (cljbang-eval-string (apply #'format src args)))
 
+(defun cljbang-org-test--heading (file title)
+  "The heading map titled TITLE in FILE, or nil.
+There is no `cljbang.org/heading': finding one heading among many is
+Clojure's job, so the tests do it the way a caller would."
+  (cljbang-eval-string
+   (format "(->> (cljbang.org/headings %S)
+                 (filter #(= %S (:title %%)))
+                 first)"
+           file title)))
+
+(defun cljbang-org-test--tangle-targets (src &rest args)
+  "Distinct tangle targets of the block maps Clojure SRC returns.
+SRC is a format string filled with ARGS."
+  (cljbang-eval-string
+   (format "(->> %s
+                 (keep (comp :tangle :headers))
+                 (remove #{\"no\"})
+                 distinct
+                 vec)"
+           (apply #'format src args))))
+
 (defmacro cljbang-org-test--with-temp-fixture (var name &rest body)
   "Copy fixture NAME into a temp dir, bind its path to VAR, run BODY.
 Kills any visiting buffer and deletes the dir afterwards."
@@ -56,25 +77,26 @@ Kills any visiting buffer and deletes the dir afterwards."
 
 (ert-deftest cljbang-org-test-headings-todo-and-level ()
   (should (equal "TODO"
-                 (cljbang-org-test--eval
-                  "(:todo (cljbang.org/heading %S \"State checks\"))"
-                  (cljbang-org-test--fixture "server.org"))))
-  (should (= 2 (cljbang-org-test--eval
-                "(:level (cljbang.org/heading %S \"caddy.container\"))"
-                (cljbang-org-test--fixture "server.org")))))
+                 (cljbang-get (cljbang-org-test--heading
+                               (cljbang-org-test--fixture "server.org")
+                               "State checks")
+                              :todo)))
+  (should (= 2 (cljbang-get (cljbang-org-test--heading
+                             (cljbang-org-test--fixture "server.org")
+                             "caddy.container")
+                            :level))))
 
-(ert-deftest cljbang-org-test-heading-by-map-selector ()
-  (should (equal "Quadlets"
+(ert-deftest cljbang-org-test-headings-carry-properties ()
+  "The heading map already holds the drawer, so there is no
+`properties' or `entry-get' to duplicate it."
+  (should (equal "quadlets"
                  (cljbang-org-test--eval
-                  "(:title (cljbang.org/heading %S {:custom-id \"quadlets\"}))"
+                  "(->> (cljbang.org/headings %S)
+                        (keep #(get-in %% [:properties :CUSTOM_ID]))
+                        first)"
                   (cljbang-org-test--fixture "server.org")))))
 
-(ert-deftest cljbang-org-test-heading-miss-is-nil ()
-  (should (null (cljbang-org-test--eval
-                 "(cljbang.org/heading %S \"no such heading\")"
-                 (cljbang-org-test--fixture "server.org")))))
-
-;;; Keywords and properties
+;;; Keywords
 
 (ert-deftest cljbang-org-test-keywords ()
   (should (equal ["Test server"]
@@ -84,16 +106,6 @@ Kills any visiting buffer and deletes the dir afterwards."
   (should (equal [".. (project)" "/ssh:app@example: (server)"]
                  (cljbang-org-test--eval
                   "(:target (cljbang.org/keywords %S))"
-                  (cljbang-org-test--fixture "server.org")))))
-
-(ert-deftest cljbang-org-test-properties-and-entry-get ()
-  (should (equal "quadlets"
-                 (cljbang-org-test--eval
-                  "(:CUSTOM_ID (cljbang.org/properties %S \"Quadlets\"))"
-                  (cljbang-org-test--fixture "server.org"))))
-  (should (equal "quadlets"
-                 (cljbang-org-test--eval
-                  "(cljbang.org/entry-get %S \"Quadlets\" :CUSTOM_ID)"
                   (cljbang-org-test--fixture "server.org")))))
 
 ;;; Src blocks and tangle targets
@@ -116,13 +128,27 @@ Kills any visiting buffer and deletes the dir afterwards."
                         first)"
                   (cljbang-org-test--fixture "server.org")))))
 
+(ert-deftest cljbang-org-test-src-blocks-under-every-match ()
+  ":under is not first-match: both Quadlets subtrees contribute."
+  (should (equal ["~/.config/containers/systemd/a.container"
+                  "~/.config/containers/systemd/b.container"]
+                 (cljbang-org-test--tangle-targets
+                  "(cljbang.org/src-blocks %S {:under \"Quadlets\"})"
+                  (cljbang-org-test--fixture "repeated.org")))))
+
+(ert-deftest cljbang-org-test-src-blocks-under-miss-is-empty ()
+  (should (equal []
+                 (cljbang-org-test--eval
+                  "(vec (cljbang.org/src-blocks %S {:under \"no such heading\"}))"
+                  (cljbang-org-test--fixture "server.org")))))
+
 (ert-deftest cljbang-org-test-tangle-targets ()
-  "Drops :tangle no and headerless blocks, keeps order, dedupes."
+  "Block maps carry enough for Clojure to do the filtering: drops
+:tangle no and headerless blocks, keeps order, dedupes."
   (should (equal ["~/.config/containers/systemd/caddy.container"
                   "~/.config/containers/systemd/caddy_data.volume"]
-                 (cljbang-org-test--eval
-                  "(cljbang.org/tangle-targets
-                     (cljbang.org/src-blocks %S {:under \"Quadlets\"}))"
+                 (cljbang-org-test--tangle-targets
+                  "(cljbang.org/src-blocks %S {:under \"Quadlets\"})"
                   (cljbang-org-test--fixture "server.org")))))
 
 ;;; Effects
@@ -141,9 +167,7 @@ Kills any visiting buffer and deletes the dir afterwards."
     (with-temp-buffer
       (insert-file-contents file)
       (should-not (search-forward "aly-odoo-16-demo.container" nil t)))
-    (should (null (cljbang-org-test--eval
-                   "(cljbang.org/heading %S \"aly-odoo-16-demo.container\")"
-                   file)))
+    (should (null (cljbang-org-test--heading file "aly-odoo-16-demo.container")))
     ;; idempotent: nothing left to cut
     (should (= 0 (cljbang-org-test--eval
                   "(cljbang.org/cut-subtree! %S \"aly-odoo-16-demo.container\")"
@@ -152,12 +176,11 @@ Kills any visiting buffer and deletes the dir afterwards."
 (ert-deftest cljbang-org-test-revert-discards ()
   (cljbang-org-test--with-temp-fixture file "server.org"
     (cljbang-org-test--eval "(cljbang.org/cut-subtree! %S \"Demo\")" file)
-    (should (null (cljbang-org-test--eval
-                   "(cljbang.org/heading %S \"Demo\")" file)))
+    (should (null (cljbang-org-test--heading file "Demo")))
     (cljbang-org-test--eval "(cljbang.org/revert! %S)" file)
     (should (equal "Demo"
-                   (cljbang-org-test--eval
-                    "(:title (cljbang.org/heading %S \"Demo\"))" file)))))
+                   (cljbang-get (cljbang-org-test--heading file "Demo")
+                                :title)))))
 
 ;;; Transclusion expansion
 
@@ -169,18 +192,15 @@ Kills any visiting buffer and deletes the dir afterwards."
                                  (file-name-directory file)))
     ;; without expansion, only the local block
     (should (equal ["~/.config/containers/systemd/local.container"]
-                   (cljbang-org-test--eval
-                    "(cljbang.org/tangle-targets
-                       (cljbang.org/src-blocks %S {:under \"Quadlets\"}))"
+                   (cljbang-org-test--tangle-targets
+                    "(cljbang.org/src-blocks %S {:under \"Quadlets\"})"
                     file)))
     ;; with expansion, the transcluded block appears too
-    (should (equal 2
-                   (cljbang-org-test--eval
-                    "(count (cljbang.org/tangle-targets
-                              (cljbang.org/src-blocks
-                                %S {:under \"Quadlets\"
-                                    :expand-transclusions? true})))"
-                    file)))
+    (should (= 2 (length (cljbang-org-test--tangle-targets
+                          "(cljbang.org/src-blocks
+                             %S {:under \"Quadlets\"
+                                 :expand-transclusions? true})"
+                          file))))
     ;; and the query left the file's buffer unmodified
     (should-not (buffer-modified-p (find-buffer-visiting file)))))
 

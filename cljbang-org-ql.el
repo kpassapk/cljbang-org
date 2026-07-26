@@ -2,6 +2,9 @@
 
 ;; Author: Kyle Passarelli
 ;; URL: https://github.com/kpassapk/cljbang-org
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "28.1") (cljbang-org "0.1.0") (org-ql "0.7"))
+;; Keywords: outlines, languages
 
 ;;; Commentary:
 
@@ -13,6 +16,12 @@
 ;; The query sexp goes to org-ql verbatim; the :action is always this
 ;; library's extractor, so results are the same heading and block maps
 ;; cljbang.org returns — no imperative lambda at point.
+;;
+;; This is the search half of the API, and the only reason cljbang.org
+;; itself has no query language: a selector there names one heading you
+;; already mean, an org-ql sexp here describes headings you are looking
+;; for.  The two meet in the heading map, which `select' returns and
+;; cljbang.org's effects accept as a selector.
 
 ;;; Code:
 

@@ -1,0 +1,25 @@
+#+TITLE: Repeated headings
+
+* Quadlets
+
+** a.container
+
+#+begin_src systemd :tangle ~/.config/containers/systemd/a.container
+[Container]
+Image=a
+#+end_src
+
+* Elsewhere
+
+#+begin_src sh :tangle ~/elsewhere.sh
+echo not under Quadlets
+#+end_src
+
+* Quadlets
+
+** b.container
+
+#+begin_src systemd :tangle ~/.config/containers/systemd/b.container
+[Container]
+Image=b
+#+end_src
