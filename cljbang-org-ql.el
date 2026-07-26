@@ -3,7 +3,7 @@
 ;; Author: Kyle Passarelli
 ;; URL: https://github.com/kpassapk/cljbang-org
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (cljbang-org "0.1.0") (org-ql "0.7"))
+;; Package-Requires: ((emacs "28.1") (org-ql "0.7") (cljbang "0.0.9"))
 ;; Keywords: outlines, languages
 
 ;;; Commentary:
