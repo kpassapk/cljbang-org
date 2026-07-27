@@ -151,6 +151,104 @@ Kills any visiting buffer and deletes the dir afterwards."
                   "(cljbang.org/src-blocks %S {:under \"Quadlets\"})"
                   (cljbang-org-test--fixture "server.org")))))
 
+;;; Tables
+
+(ert-deftest cljbang-org-test-tables-skip-pipes-in-blocks ()
+  "Three org tables; the markdown table inside a src block is text."
+  (should (= 3 (cljbang-org-test--eval
+                "(count (cljbang.org/tables %S))"
+                (cljbang-org-test--fixture "tables.org")))))
+
+(ert-deftest cljbang-org-test-tables-names-and-caption ()
+  (should (equal ["hosts"]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/tables %S) (keep :name) vec)"
+                  (cljbang-org-test--fixture "tables.org"))))
+  (should (equal "Where things run"
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/tables %S) (keep :caption) first)"
+                  (cljbang-org-test--fixture "tables.org")))))
+
+(ert-deftest cljbang-org-test-tables-rows-keep-hlines ()
+  ":rows is lossless: the rule is there, so a caller that cares can see it."
+  (should (equal [["Host Name" "IP"] :hline ["caddy" "10.0.0.1"] ["odoo" "10.0.0.2"]]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/tables %S)
+                        (filter #(= \"hosts\" (:name %%)))
+                        first
+                        :rows)"
+                  (cljbang-org-test--fixture "tables.org")))))
+
+(ert-deftest cljbang-org-test-tables-formulas ()
+  (should (equal ["@5$2=vsum(@2..@3)"]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/tables %S)
+                        (map :formulas)
+                        (remove empty?)
+                        first)"
+                  (cljbang-org-test--fixture "tables.org")))))
+
+(ert-deftest cljbang-org-test-tables-under ()
+  ":under narrows to the subtree, and takes the nested table with it."
+  (should (= 2 (cljbang-org-test--eval
+                "(count (cljbang.org/tables %S {:under \"Hosts\"}))"
+                (cljbang-org-test--fixture "tables.org"))))
+  (should (equal []
+                 (cljbang-org-test--eval
+                  "(vec (cljbang.org/tables %S {:under \"no such heading\"}))"
+                  (cljbang-org-test--fixture "tables.org")))))
+
+;;; Coercion: tables
+
+(ert-deftest cljbang-org-test-rows-drops-hlines ()
+  (should (equal [["caddy" "10.0.0.1"] ["odoo" "10.0.0.2"]]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/tables %S)
+                        (filter #(= \"hosts\" (:name %%)))
+                        first
+                        cljbang.org/rows
+                        rest
+                        vec)"
+                  (cljbang-org-test--fixture "tables.org")))))
+
+(ert-deftest cljbang-org-test-rows-shapes-agree ()
+  "A table map, its :rows, and the list a :var hands over coerce alike."
+  (let ((from-var '(("a" "b") hline ("1" "2")))
+        (from-query (vector (vector "a" "b") :hline (vector "1" "2"))))
+    (should (equal [["a" "b"] ["1" "2"]] (cljbang-org-rows from-var)))
+    (should (equal [["a" "b"] ["1" "2"]] (cljbang-org-rows from-query)))))
+
+(ert-deftest cljbang-org-test-rows-stringifies-cells ()
+  "Babel hands numbers over; org tables hold text either way."
+  (should (equal [["2"]] (cljbang-org-rows '((2))))))
+
+(ert-deftest cljbang-org-test-table->maps ()
+  "Header above the rule names the columns, downcased and dashed."
+  (should (equal [["caddy" "10.0.0.1"] ["odoo" "10.0.0.2"]]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/tables %S)
+                        (filter #(= \"hosts\" (:name %%)))
+                        first
+                        cljbang.org/table->maps
+                        (mapv #(vector (:host-name %%) (:ip %%))))"
+                  (cljbang-org-test--fixture "tables.org")))))
+
+(ert-deftest cljbang-org-test-table->maps-without-a-rule ()
+  "No rule: the first row is the header, org's own :colnames rule."
+  (should (equal ["https"]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/tables %S {:under \"Ports\"})
+                        first
+                        cljbang.org/table->maps
+                        (mapv :http))"
+                  (cljbang-org-test--fixture "tables.org")))))
+
+(ert-deftest cljbang-org-test-table->maps-pads-and-names-blanks ()
+  "An empty header cell keys by position; a short row pads."
+  (let ((row (aref (cljbang-org-table->maps '(("a" "") hline ("1"))) 0)))
+    (should (equal "1" (cljbang-get row :a)))
+    (should (equal "" (cljbang-get row :col-2)))))
+
 ;;; Effects
 
 (ert-deftest cljbang-org-test-cut-subtree-buffer-only-then-save ()

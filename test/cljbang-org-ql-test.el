@@ -26,6 +26,30 @@
                      %S '(and (heading \"Quadlets\") (level 1)))"
                   (cljbang-org-test--fixture "server.org")))))
 
+(ert-deftest cljbang-org-ql-test-tables ()
+  "One subtree, its nested table included; the maps are cljbang.org's."
+  (skip-unless (require 'org-ql nil t))
+  (require 'cljbang-org-ql)
+  (should (= 2 (cljbang-org-test--eval
+                "(count (cljbang.org.ql/tables %S '(heading \"Hosts\")))"
+                (cljbang-org-test--fixture "tables.org"))))
+  (should (equal ["hosts"]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org.ql/tables %S '(heading \"Hosts\"))
+                        (keep :name) vec)"
+                  (cljbang-org-test--fixture "tables.org")))))
+
+(ert-deftest cljbang-org-ql-test-tables-every-match ()
+  "Every matching subtree contributes, in file order, one flat vector."
+  (skip-unless (require 'org-ql nil t))
+  (require 'cljbang-org-ql)
+  (should (equal ["Host Name" "80" "item"]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org.ql/tables
+                          %S '(or (heading \"Hosts\") (heading \"Totals\")))
+                        (mapv #(-> %% cljbang.org/rows first first)))"
+                  (cljbang-org-test--fixture "tables.org")))))
+
 (ert-deftest cljbang-org-ql-test-select-result-is-a-selector ()
   "The hinge between the two packages: org-ql searches, and every
 heading map it returns is a selector cljbang.org's effects accept."

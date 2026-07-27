@@ -1,0 +1,37 @@
+#+TITLE: Tables
+
+* Hosts
+
+#+name: hosts
+#+caption: Where things run
+| Host Name | IP       |
+|-----------+----------|
+| caddy     | 10.0.0.1 |
+| odoo      | 10.0.0.2 |
+
+** Ports
+
+No name, no header rule.
+
+| 80  | http  |
+| 443 | https |
+
+* Notes
+
+Pipes inside a block are text, not a table:
+
+#+begin_src markdown
+| this | is  |
+|------+-----|
+| not  | org |
+#+end_src
+
+* Totals
+
+| item | qty |
+|------+-----|
+| a    |   2 |
+| b    |   3 |
+|------+-----|
+| sum  |   5 |
+#+TBLFM: @5$2=vsum(@2..@3)

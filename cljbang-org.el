@@ -20,8 +20,8 @@
 ;;        (map :title))
 ;;
 ;; Queries return read-only snapshots: flat maps for headings, source
-;; blocks and file keywords, extracted at point with org's cheap APIs,
-;; never the raw org-element AST.  Positions in those maps (:begin
+;; blocks, tables and file keywords, extracted at point with org's cheap
+;; APIs, never the raw org-element AST.  Positions in those maps (:begin
 ;; :end) are provenance, not handles: effect functions (the ! names)
 ;; take a selector and re-locate from scratch, so stale positions
 ;; cannot corrupt an edit.  Effects edit the visiting buffer; save! is
@@ -39,8 +39,11 @@
 ;;; Code:
 
 (require 'org)
+(require 'org-element)
+(require 'org-table)
 (require 'ob-core)
 (require 'ob-tangle)
+(require 'seq)
 (require 'subr-x)
 (require 'cljbang-core)
 
@@ -88,6 +91,29 @@ and the buffer's modified flag restored, whatever BODY does."
          (org-transclusion-remove-all)
          (setq cljbang-org--transcluded nil)
          (set-buffer-modified-p cljbang-org--was-modified)))))
+
+(defun cljbang-org--scan (file opts collect)
+  "COLLECT over FILE, honoring the opts every element query shares.
+COLLECT takes no arguments, runs in FILE's buffer over the accessible
+portion, and returns a vector; results concatenate in file order.
+OPTS: {:under selector} runs COLLECT narrowed to every matching subtree
+instead of once over the file; {:expand-transclusions? true} expands
+transclusions for the scan and removes them again."
+  (cljbang-org--with-file file
+    (let ((under (cljbang-org--opt opts :under))
+          (expand (cljbang-org--opt opts :expand-transclusions?)))
+      (if (not under)
+          (cljbang-org--with-transclusions expand
+            (funcall collect))
+        (apply #'vconcat
+               (mapcar (lambda (pos)
+                         (goto-char pos)
+                         (save-restriction
+                           (org-narrow-to-subtree)
+                           (cljbang-org--with-transclusions expand
+                             (funcall collect))))
+                       (cljbang-org--locate-all
+                        (cljbang-org--selector-pred under))))))))
 
 ;;; Extraction at point
 
@@ -194,6 +220,86 @@ stops caring.
   (org/lines [[\"a\"] [\"b\"]])   ;=> [\"a\" \"b\"]"
   (apply #'vector (cljbang-org--lines x)))
 
+(defun cljbang-org--hline-p (row)
+  "Whether ROW is a horizontal rule rather than data.
+Org writes one `hline' when babel hands a table to a :var and :hline
+when `cljbang-org-tables' reads the same table; the caller of a
+coercion should not have to know which arrived."
+  (memq row '(hline :hline)))
+
+(defun cljbang-org--table-rows (x)
+  "Rows of X as a list, whatever shape X arrived in.
+X is a table map, its :rows, or the table a :var handed over."
+  (append (if (hash-table-p x) (cljbang-get x :rows) x) nil))
+
+(defun cljbang-org--cell (x)
+  "Cell X as a trimmed string; org tables have no types."
+  (if x (string-trim (format "%s" x)) ""))
+
+(defun cljbang-org--row (row)
+  (apply #'vector (mapcar #'cljbang-org--cell (append row nil))))
+
+;;;###autoload
+(defun cljbang-org-rows (x)
+  "X as a vector of data rows, each a vector of trimmed cell strings.
+Horizontal rules are dropped.  X is a table map from
+`cljbang-org-tables', its :rows, or the list a :var naming a table
+hands over.
+
+  (org/rows [[\"a\" \"b\"] :hline [\"1\" \"2\"]])  ;=> [[\"a\" \"b\"] [\"1\" \"2\"]]"
+  (apply #'vector
+         (delq nil
+               (mapcar (lambda (row)
+                         (unless (cljbang-org--hline-p row)
+                           (cljbang-org--row row)))
+                       (cljbang-org--table-rows x)))))
+
+(defun cljbang-org--header-key (cell i)
+  "Keyword naming column I (zero-based), whose header cell is CELL."
+  (let* ((s (downcase (cljbang-org--cell cell)))
+         (s (replace-regexp-in-string "[^[:alnum:]]+" "-" s))
+         (s (string-trim s "-+" "-+")))
+    (intern (concat ":" (if (string-empty-p s) (format "col-%d" (1+ i)) s)))))
+
+(defun cljbang-org--split-header (rows)
+  "Cons of the header row and the data rows of ROWS.
+The header is the row above the first horizontal rule, or the first row
+when there is none -- org's own :colnames rule.  Rules are dropped from
+the data either way."
+  (let ((rule (seq-position rows nil (lambda (row _) (cljbang-org--hline-p row)))))
+    (if (and rule (> rule 0))
+        (cons (nth (1- rule) rows)
+              (seq-remove #'cljbang-org--hline-p (nthcdr (1+ rule) rows)))
+      (let ((data (seq-remove #'cljbang-org--hline-p rows)))
+        (cons (car data) (cdr data))))))
+
+;;;###autoload
+(defun cljbang-org-table->maps (x)
+  "X as a vector of row maps keyed by the table's column names.
+X takes the same shapes `cljbang-org-rows' does.
+
+The header is the row above the first horizontal rule, or the first row
+when the table has none.  Keys are its cells as keywords, downcased with
+runs of non-alphanumerics collapsed to a single dash, so \"Host Name\"
+keys :host-name; an empty header cell keys :col-N by position, and a
+repeated one keeps the last column it names.  A row shorter than the
+header pads with empty strings, a longer one loses its extra cells.
+
+  (org/table->maps [[\"Host Name\"] :hline [\"caddy\"]])
+  ;=> [{:host-name \"caddy\"}]"
+  (let* ((split (cljbang-org--split-header (cljbang-org--table-rows x)))
+         (keys (seq-map-indexed (lambda (cell i) (cljbang-org--header-key cell i))
+                                (append (car split) nil))))
+    (apply #'vector
+           (mapcar (lambda (row)
+                     (let ((cells (append row nil))
+                           (h (make-hash-table :test #'equal)))
+                       (seq-do-indexed
+                        (lambda (key i) (puthash key (cljbang-org--cell (nth i cells)) h))
+                        keys)
+                       h))
+                   (cdr split)))))
+
 ;;; Queries
 
 ;;;###autoload
@@ -261,21 +367,72 @@ so an untangled block carries :tangle \"no\"."
   "Src blocks in FILE as a vector of block maps.
 OPTS: {:under selector} restricts to every matching subtree, in file
 order; {:expand-transclusions? true} scans transcluded content too."
-  (cljbang-org--with-file file
-    (let ((under (cljbang-org--opt opts :under))
-          (expand (cljbang-org--opt opts :expand-transclusions?)))
-      (if (not under)
-          (cljbang-org--with-transclusions expand
-            (cljbang-org--collect-blocks))
-        (apply #'vconcat
-               (mapcar (lambda (pos)
-                         (goto-char pos)
-                         (save-restriction
-                           (org-narrow-to-subtree)
-                           (cljbang-org--with-transclusions expand
-                             (cljbang-org--collect-blocks))))
-                       (cljbang-org--locate-all
-                        (cljbang-org--selector-pred under))))))))
+  (cljbang-org--scan file opts #'cljbang-org--collect-blocks))
+
+;;; Tables
+
+(defun cljbang-org--caption (begin end)
+  "The #+CAPTION: text among the affiliated keywords in BEGIN..END, or nil.
+Read from the text rather than the element, whose :caption is a parsed
+secondary string; a query returns what the file says."
+  (and (> end begin)
+       (save-excursion
+         (goto-char begin)
+         (when (re-search-forward
+                "^[ \t]*#\\+caption:[ \t]*\\(.*?\\)[ \t]*$" end t)
+           (match-string-no-properties 1)))))
+
+(defun cljbang-org--table-at-point (el)
+  "Table element EL as a map: :name :rows :caption :formulas :begin
+:end :file.  :rows holds every row in file order, a vector of trimmed
+cell strings, with :hline for each horizontal rule -- lossless, so
+`cljbang-org-rows' and `cljbang-org-table->maps' can take the shape from
+here.  :formulas holds the #+TBLFM: lines verbatim."
+  (let ((begin (org-element-property :begin el))
+        (post (org-element-property :post-affiliated el)))
+    (cljbang-hash-map
+     :name (org-element-property :name el)
+     :rows (apply #'vector
+                  (mapcar (lambda (row)
+                            (if (cljbang-org--hline-p row) :hline
+                              (cljbang-org--row row)))
+                          (save-excursion
+                            (goto-char post)
+                            (org-table-to-lisp))))
+     :caption (cljbang-org--caption begin post)
+     :formulas (apply #'vector (org-element-property :tblfm el))
+     :begin begin
+     :end (save-excursion
+            (goto-char (org-element-property :end el))
+            (skip-chars-backward " \t\n")
+            (point))
+     :file (buffer-file-name))))
+
+(defun cljbang-org--collect-tables ()
+  "Org tables in the accessible portion, as a vector of table maps.
+Every candidate line is checked against the element at point, so pipes
+inside a src or example block are text, not a table.  table.el tables
+are not org data and are skipped."
+  (let (acc)
+    (goto-char (point-min))
+    (while (re-search-forward org-table-line-regexp nil t)
+      (beginning-of-line)
+      (let ((el (org-element-at-point)))
+        (when (and (eq (org-element-type el) 'table)
+                   (eq (org-element-property :type el) 'org))
+          (push (cljbang-org--table-at-point el) acc))
+        ;; past the whole element, table or not, so its remaining lines
+        ;; are not re-examined; never backwards, so the scan terminates
+        (goto-char (max (org-element-property :end el)
+                        (line-beginning-position 2)))))
+    (apply #'vector (nreverse acc))))
+
+;;;###autoload
+(defun cljbang-org-tables (file &optional opts)
+  "Org tables in FILE as a vector of table maps.
+OPTS: {:under selector} restricts to every matching subtree, in file
+order; {:expand-transclusions? true} scans transcluded content too."
+  (cljbang-org--scan file opts #'cljbang-org--collect-tables))
 
 ;;; Effects
 

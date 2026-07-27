@@ -2,7 +2,7 @@
 
 Org mode as Clojure data for [cljbang.el][cljbang].
 
-This library lets you query and edit org files with a more clojure-friendly API. It optionally integrates with [org-ql][org-ql] and [org-transclusion][org-transclusion].
+This library lets you query and edit org files with a more Clojure-friendly API. It optionally integrates with [org-ql][org-ql] and [org-transclusion][org-transclusion].
 
 [cljbang]: https://github.com/kpassapk/cljbang.el
 [org-ql]: https://github.com/alphapapa/org-ql
@@ -92,6 +92,7 @@ The result would look almost the same as the original elisp, but with some `el/`
 | `(headings file & [opts])` | every heading in the file, as a vector of heading maps |
 | `(keywords file)` | file keywords (`#+KEY: value` lines) as a map of lowercase keyword to vector of values, so repeated keywords like `#+TARGET:` all arrive |
 | `(src-blocks file & [opts])` | source blocks as a vector of block maps; `{:under selector}` restricts to every matching subtree |
+| `(tables file & [opts])` | org tables as a vector of table maps; takes the same opts |
 
 Query opts also accept `{:expand-transclusions? true}` to scan transcluded
 content.
@@ -101,11 +102,20 @@ A **heading map** has `:title :level :tags :todo :priority :properties :begin
 :file`, where `:headers` is the resolved header-arg map with defaults
 included — an untangled block carries `:tangle "no"`.
 
+A **table map** has `:name :rows :caption :formulas :begin :end :file`.
+`:rows` is every row in file order — a vector of trimmed cell strings, with
+`:hline` for each horizontal rule — so it is lossless and the coercions below
+can take their input straight from it. `:formulas` holds the `#+TBLFM:` lines
+verbatim. Pipes inside a src or example block are text, not a table, and
+`table.el` tables are skipped.
+
 ### Coercion — `cljbang.org`
 
 | Function | Returns |
 |---|---|
 | `(lines x)` | `x` as a vector of non-blank, trimmed lines, whatever shape it arrived in |
+| `(rows x)` | the data rows of a table, horizontal rules dropped |
+| `(table->maps x)` | the data rows as maps keyed by column name |
 
 The same list of names reaches a block as text, as a vector of strings, or as a
 table — a vector of one-element rows — depending on how the block that produced
@@ -131,16 +141,36 @@ So a drift check can stop caring:
 #+end_src
 ```
 
+`rows` and `table->maps` do the same job for tables. Both take a table map, its
+`:rows`, or the list a `:var` naming a table hands over — org writes a rule as
+`hline` there and `:hline` here, and neither caller should have to know which.
+
+```clojure
+(->> (org/tables "hosts.org")
+     (filter #(= "hosts" (:name %)))
+     first
+     org/table->maps
+     (map :ip))
+```
+
+`table->maps` takes the row above the first rule as the header, or the first row
+when the table has none — org's own `:colnames` rule. Column names become
+keywords, downcased with runs of non-alphanumerics collapsed to one dash, so
+`Host Name` keys `:host-name`; an empty header cell keys `:col-N` by position.
+
 ### Queries — `cljbang.org.ql`
 
 | Function | Returns |
 |---|---|
 | `(select file query & [opts])` | headings matching an [org-ql][org-ql] query sexp, as heading maps |
 | `(src-blocks file query & [opts])` | source blocks under each matching heading, one flat vector |
+| `(tables file query & [opts])` | org tables under each matching heading, one flat vector |
 
 The query sexp goes to org-ql verbatim; the action is always this library's
 extractor, so results are the same maps `cljbang.org` returns — no imperative
-lambda at point.
+lambda at point. `src-blocks` and `tables` are `cljbang.org`'s `{:under
+selector}` with a search where the selector would be: one heading you already
+mean becomes every heading matching a query, and the coercions apply unchanged.
 
 ### Selectors
 
