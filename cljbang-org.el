@@ -20,12 +20,12 @@
 ;;        (map :title))
 ;;
 ;; Queries return read-only snapshots: flat maps for headings, source
-;; blocks, tables and file keywords, extracted at point with org's cheap
-;; APIs, never the raw org-element AST.  Positions in those maps (:begin
-;; :end) are provenance, not handles: effect functions (the ! names)
-;; take a selector and re-locate from scratch, so stale positions
-;; cannot corrupt an edit.  Effects edit the visiting buffer; save! is
-;; the separate, explicit step that touches disk.
+;; blocks, call lines, tables and file keywords, extracted at point with
+;; org's cheap APIs, never the raw org-element AST.  Positions in those
+;; maps (:begin :end) are provenance, not handles: effect functions (the
+;; ! names) take a selector and re-locate from scratch, so stale
+;; positions cannot corrupt an edit.  Effects edit the visiting buffer;
+;; save! is the separate, explicit step that touches disk.
 ;;
 ;; A selector names a heading you already mean; it is a reference, not
 ;; a search.  Selectors deliberately do not grow query features (no
@@ -38,10 +38,12 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'org)
 (require 'org-element)
 (require 'org-table)
 (require 'ob-core)
+(require 'ob-lob)
 (require 'ob-tangle)
 (require 'seq)
 (require 'subr-x)
@@ -53,6 +55,11 @@
   "Non-nil while a query has transclusions expanded.
 Effects check this and refuse to edit, because positions in expanded
 text do not belong to the file.")
+
+(defvar cljbang-org--index-of nil
+  "Positions of the file's runnable blocks to their index, or nil.
+Built on demand by `cljbang-org--index-at' and bound afresh below, so
+one query numbers against one state of the buffer.")
 
 (defun cljbang-org--buffer (file)
   "The buffer visiting FILE, opening it if need be."
@@ -68,7 +75,12 @@ text do not belong to the file.")
      (save-excursion
        (save-restriction
          (widen)
-         ,@body))))
+         (let ((cljbang-org--index-of nil))
+           ,@body)))))
+
+(defun cljbang-org--str (s)
+  "S without its text properties, or nil."
+  (and s (substring-no-properties s)))
 
 (defun cljbang-org--opt (opts key)
   "Value of KEY in OPTS, a cljbang map or nil."
@@ -117,6 +129,22 @@ transclusions for the scan and removes them again."
 
 ;;; Extraction at point
 
+(defvar cljbang-org--include-body nil
+  "Non-nil while a query asked for :body on its heading maps.
+Bound by the query, read by `cljbang-org--heading-at-point', so
+`cljbang-org-ql-select' gets the option for free.")
+
+(defun cljbang-org--body-at-point ()
+  "Text of the entry at point, or nil when it has none.
+The heading's own prose: planning line, drawers and subheadings are
+not part of it."
+  (save-excursion
+    (org-end-of-meta-data t)
+    (let* ((beg (point))
+           (end (save-excursion (outline-next-heading) (point)))
+           (body (string-trim (buffer-substring-no-properties beg (max beg end)))))
+      (unless (string-empty-p body) body))))
+
 (defun cljbang-org--properties-at-point ()
   "Drawer properties of the heading at point, as a map with keyword keys."
   (let ((h (make-hash-table :test #'equal)))
@@ -128,20 +156,28 @@ transclusions for the scan and removes them again."
 
 (defun cljbang-org--heading-at-point ()
   "Heading at point as a map: :title :level :tags :todo :priority
-:properties :begin :end :file."
+:scheduled :deadline :properties :begin :end :file.  :scheduled and
+:deadline hold the timestamp as the file writes it, or nil.  :body is
+there too when the query asked for it."
   (let* ((comps (org-heading-components))
-         (priority (nth 3 comps)))
-    (cljbang-hash-map
-     :title (cljbang-org--title-at-point)
-     :level (nth 0 comps)
-     :todo (nth 2 comps)
-     :priority (and priority (char-to-string priority))
-     :tags (apply #'cljbang-hash-set
-                  (mapcar #'substring-no-properties (org-get-tags nil t)))
-     :properties (cljbang-org--properties-at-point)
-     :begin (point)
-     :end (save-excursion (org-end-of-subtree t t) (point))
-     :file (buffer-file-name))))
+         (priority (nth 3 comps))
+         (heading
+          (cljbang-hash-map
+           :title (cljbang-org--title-at-point)
+           :level (nth 0 comps)
+           :todo (nth 2 comps)
+           :priority (and priority (char-to-string priority))
+           :tags (apply #'cljbang-hash-set
+                        (mapcar #'substring-no-properties (org-get-tags nil t)))
+           :scheduled (cljbang-org--str (org-entry-get nil "SCHEDULED"))
+           :deadline (cljbang-org--str (org-entry-get nil "DEADLINE"))
+           :properties (cljbang-org--properties-at-point)
+           :begin (point)
+           :end (save-excursion (org-end-of-subtree t t) (point))
+           :file (buffer-file-name))))
+    (when cljbang-org--include-body
+      (puthash :body (cljbang-org--body-at-point) heading))
+    heading))
 
 ;;; Selectors: how an effect names the heading it means
 
@@ -190,6 +226,39 @@ language: it stays this small on purpose.  To search, filter the data
     (nreverse acc)))
 
 ;;; Coercion
+
+;;;###autoload
+(defun cljbang-org-tree (headings)
+  "HEADINGS nested by :level, as a vector of the root headings.
+Each map is a copy of the one handed in with a :children vector added,
+so the input is untouched and a leaf's :children is empty rather than
+missing.  Every heading map has a :level, so this nests whatever
+produced them:
+
+  (org/tree (org/headings \"box.org\"))
+  (org/tree (ql/select \"box.org\" \\='(todo \"TODO\")))
+
+A heading deeper than its predecessor by more than one level is still
+that heading's child; org files skip levels and the shape has to say
+something.  Headings that arrive out of file order nest by the order
+given, not by position."
+  (let (roots stack nodes)
+    (dolist (heading (append headings nil))
+      (let ((level (or (cljbang-get heading :level) 1))
+            (node (copy-hash-table heading)))
+        (push node nodes)
+        (puthash :children nil node)
+        (while (and stack (>= (caar stack) level)) (pop stack))
+        (if stack
+            (let ((parent (cdar stack)))
+              (puthash :children (cons node (cljbang-get parent :children)) parent))
+          (push node roots))
+        (push (cons level node) stack)))
+    (dolist (node nodes)
+      (puthash :children
+               (apply #'vector (nreverse (cljbang-get node :children)))
+               node))
+    (apply #'vector (nreverse roots))))
 
 (defun cljbang-org--lines (x)
   "Lines of X as a list, flattening nested sequences."
@@ -305,14 +374,21 @@ header pads with empty strings, a longer one loses its extra cells.
 ;;;###autoload
 (defun cljbang-org-headings (file &optional opts)
   "All headings in FILE as a vector of heading maps.
-OPTS: {:expand-transclusions? true} to scan transcluded content too."
+OPTS: {:body? true} adds each heading's own text as :body;
+{:expand-transclusions? true} to scan transcluded content too.
+
+There is no :max-level, and no other filter: the vector is the whole
+outline, and narrowing it is Clojure's job.
+
+  (filter #(<= (:level %) 2) (org/headings f))"
   (cljbang-org--with-file file
-    (cljbang-org--with-transclusions
-        (cljbang-org--opt opts :expand-transclusions?)
-      (let (acc)
-        (org-map-entries
-         (lambda () (push (cljbang-org--heading-at-point) acc)))
-        (apply #'vector (nreverse acc))))))
+    (let ((cljbang-org--include-body (cljbang-org--opt opts :body?)))
+      (cljbang-org--with-transclusions
+          (cljbang-org--opt opts :expand-transclusions?)
+        (let (acc)
+          (org-map-entries
+           (lambda () (push (cljbang-org--heading-at-point) acc)))
+          (apply #'vector (nreverse acc)))))))
 
 ;;;###autoload
 (defun cljbang-org-keywords (file)
@@ -333,21 +409,61 @@ repeated keywords like #+TARGET: all arrive."
           (puthash (intern (concat ":" k)) (apply #'vector (nreverse vs)) h))
         h))))
 
+;;; Runnable blocks: what an :index counts
+
+;; A src block and a `#+call:' line are both things `execute!' can run,
+;; so they share one numbering over the whole file.  That number, not a
+;; position, is the handle: a block that writes its results back moves
+;; every position after it, while the indices stay put.
+
+(defun cljbang-org--call-begin (el)
+  "Position of the `#+call:' line of babel-call element EL.
+Its :post-affiliated, which skips a leading `#+name:' -- the line
+`cljbang-org-execute!' must run from."
+  (or (org-element-property :post-affiliated el)
+      (org-element-property :begin el)))
+
+(defun cljbang-org--runnable-positions ()
+  "Positions of every runnable block in the file, in document order.
+A runnable block is a src block or a `#+call:' line.  Collected over the
+widened buffer, so an index does not depend on what a query narrowed to."
+  (save-excursion
+    (save-restriction
+      (widen)
+      (let (srcs)
+        (org-babel-map-src-blocks nil (push beg-block srcs))
+        (sort (append srcs
+                      (org-element-map (org-element-parse-buffer 'element)
+                          'babel-call #'cljbang-org--call-begin))
+              #'<)))))
+
+(defun cljbang-org--index-at (pos)
+  "Index of the runnable block beginning at POS, or nil."
+  (unless cljbang-org--index-of
+    (setq cljbang-org--index-of (make-hash-table :test #'eql))
+    (let ((i 0))
+      (dolist (p (cljbang-org--runnable-positions))
+        (puthash p i cljbang-org--index-of)
+        (setq i (1+ i)))))
+  (gethash pos cljbang-org--index-of))
+
 ;;; Source blocks
 
 (defun cljbang-org--block-at-point ()
-  "Src block at point as a map: :language :name :headers :body :begin
-:end :file.  :headers is the resolved header-arg map, defaults included,
-so an untangled block carries :tangle \"no\"."
+  "Src block at point as a map: :type :language :name :headers :body
+:index :begin :end :file.  :headers is the resolved header-arg map,
+defaults included, so an untangled block carries :tangle \"no\"."
   (let* ((info (org-babel-get-src-block-info 'light))
          (headers (let ((h (make-hash-table :test #'equal)))
                     (dolist (kv (nth 2 info) h)
                       (puthash (car kv) (cdr kv) h)))))
     (cljbang-hash-map
+     :type :src
      :language (nth 0 info)
      :name (nth 4 info)
      :headers headers
      :body (nth 1 info)
+     :index (cljbang-org--index-at (point))
      :begin (point)
      :end (save-excursion
             (re-search-forward "^[ \t]*#\\+end_src" nil t)
@@ -366,8 +482,49 @@ so an untangled block carries :tangle \"no\"."
 (defun cljbang-org-src-blocks (file &optional opts)
   "Src blocks in FILE as a vector of block maps.
 OPTS: {:under selector} restricts to every matching subtree, in file
-order; {:expand-transclusions? true} scans transcluded content too."
+order; {:expand-transclusions? true} scans transcluded content too.
+
+An :index counts blocks in the file, not in the result, so it still
+names the block under :under -- but not under
+:expand-transclusions?, where most blocks are not the file's to run."
   (cljbang-org--scan file opts #'cljbang-org--collect-blocks))
+
+;;; Call lines
+
+(defun cljbang-org--call-block (el)
+  "Babel-call element EL as a map: :type :name :call :arguments :value
+:index :begin :end :file.  :call names the block being invoked and
+:arguments the text inside its parens; :value is the call verbatim,
+e.g. \"deploy(HOST=web1)\"."
+  (let ((begin (cljbang-org--call-begin el)))
+    (cljbang-hash-map
+     :type :call
+     :name (cljbang-org--str (org-element-property :name el))
+     :call (cljbang-org--str (org-element-property :call el))
+     :arguments (cljbang-org--str (org-element-property :arguments el))
+     :value (cljbang-org--str (org-element-property :value el))
+     :index (cljbang-org--index-at begin)
+     :begin begin
+     :end (save-excursion (goto-char begin) (line-end-position))
+     :file (buffer-file-name))))
+
+(defun cljbang-org--collect-calls ()
+  "Call lines in the accessible portion, as a vector of call maps."
+  (apply #'vector
+         (org-element-map (org-element-parse-buffer 'element) 'babel-call
+           #'cljbang-org--call-block)))
+
+;;;###autoload
+(defun cljbang-org-call-blocks (file &optional opts)
+  "The `#+call:' lines in FILE as a vector of call maps.
+Takes the same opts `cljbang-org-src-blocks' does.
+
+A call line invokes a block named elsewhere -- another heading, another
+file, the library of babel -- so `src-blocks' does not see it.  The two
+share one :index, and every runnable step in a file is:
+
+  (sort-by :index (concat (org/src-blocks f) (org/call-blocks f)))"
+  (cljbang-org--scan file opts #'cljbang-org--collect-calls))
 
 ;;; Tables
 
@@ -480,6 +637,125 @@ positions never go stale."
   "Tangle FILE; the tangled file names as a vector."
   (cljbang-org--with-file file
     (apply #'vector (org-babel-tangle))))
+
+;;; Executing a block
+
+(defun cljbang-org--require-lang (lang)
+  "Load the org-babel backend for LANG, a string, unless it is there.
+A batch Emacs loads no babel languages, so a block's backend has to be
+required before the block can run."
+  (when lang
+    (let* ((lang (downcase lang))
+           (feature (pcase lang
+                      ((or "sh" "bash" "shell" "zsh" "fish" "csh" "ksh") 'ob-shell)
+                      ((or "elisp" "emacs-lisp") 'ob-emacs-lisp)
+                      (_ (intern (concat "ob-" lang))))))
+      (unless (fboundp (intern (concat "org-babel-execute:" lang)))
+        (require feature nil t)))))
+
+(defun cljbang-org--find-named-runnable (name)
+  "Position of the runnable block named NAME, or nil.
+Src blocks first, then `#+call:' lines, which carry a `#+name:' of
+their own."
+  (or (org-babel-find-named-block name)
+      (org-element-map (org-element-parse-buffer 'element) 'babel-call
+        (lambda (el)
+          (and (equal name (org-element-property :name el))
+               (cljbang-org--call-begin el)))
+        nil t)))
+
+(defun cljbang-org--goto-runnable (file selector)
+  "Move point to the runnable block in FILE named by SELECTOR.
+SELECTOR is a block name, a map with :name or :index, or nil for the
+file's only runnable block.  A block map from `cljbang-org-src-blocks'
+or `cljbang-org-call-blocks' works: its :name wins, else its :index.
+
+Like every selector here this is a reference, not a search: it is
+resolved against the buffer as it is now, so a block that has since
+written its results back is still found."
+  (let* ((name (cond ((stringp selector) selector)
+                     ((hash-table-p selector) (cljbang-get selector :name))))
+         (index (and (hash-table-p selector) (cljbang-get selector :index)))
+         (positions (unless name (cljbang-org--runnable-positions))))
+    (cond
+     (name
+      (goto-char (or (cljbang-org--find-named-runnable name)
+                     (error "cljbang-org: no block named %s in %s" name file))))
+     (index
+      (unless (and (integerp index) (>= index 0) (< index (length positions)))
+        (error "cljbang-org: block index %s out of range; %s has %d"
+               index file (length positions)))
+      (goto-char (nth index positions)))
+     ((null selector)
+      (pcase (length positions)
+        (0 (error "cljbang-org: no runnable blocks in %s" file))
+        (1 (goto-char (car positions)))
+        (n (error "cljbang-org: %d runnable blocks in %s; pass a name or an index"
+                  n file))))
+     (t (error "cljbang-org: bad block selector %S" selector)))))
+
+(defun cljbang-org--execute-at-point ()
+  "Run the runnable block at point; its result.
+The element at point decides which executor runs, so a `#+call:' line
+works as well as a src block -- a call inherits the language of the
+block it names, which is the one that has to be loaded."
+  (let ((datum (org-element-context)))
+    (if (not (eq 'babel-call (org-element-type datum)))
+        (progn
+          (cljbang-org--require-lang (car (org-babel-get-src-block-info 'light)))
+          (org-babel-execute-src-block))
+      ;; A call line runs the block it names, and inherits that block's
+      ;; language, so that is the backend to load.  `org-babel-lob-
+      ;; execute-maybe' answers whether it ran something and drops what
+      ;; the block returned, so go the one step under it -- which org
+      ;; renamed along the way.
+      (let ((info (or (org-babel-lob-get-info datum)
+                      (error "cljbang-org: call line names no block: %s"
+                             (org-element-property :call datum)))))
+        (cljbang-org--require-lang (car info))
+        (if (fboundp 'org-babel-lob-execute)
+            (org-babel-lob-execute info)
+          (org-babel-execute-src-block nil info nil 'babel-call))))))
+
+;;;###autoload
+(defun cljbang-org-execute! (file &optional selector)
+  "Execute the runnable block in FILE named by SELECTOR; its result.
+SELECTOR is a block name, a map with :name or :index, or nil for the
+file's only runnable block; a block map from a query is one.  :index
+counts src blocks and `#+call:' lines together, in file order.
+
+An effect, because a block can do anything and its results land in the
+buffer: `cljbang-org-save!' writes them to disk, `cljbang-org-revert!'
+throws them away.
+
+A block that exits non-zero raises, carrying the exit code and what it
+wrote to stderr -- org-babel would otherwise pop up a buffer, return
+the partial output, and let the caller think it worked.  Output on
+stderr with a zero exit is not a failure and does not raise.
+
+  (org/execute! f)                    ; the only block
+  (org/execute! f \"deploy\")           ; the block named deploy
+  (org/execute! f {:index 2})         ; the third runnable block
+  (->> (org/src-blocks f) (filter ...) first (org/execute! f))"
+  (cljbang-org--with-file file
+    (cljbang-org--check-editable)
+    ;; `org-babel-eval' swallows a failing process: it pops an error
+    ;; buffer, `message's, and returns the partial output.  Turn that
+    ;; notification into a signal -- but only for a real failure, since
+    ;; stderr output with a zero exit notifies too.
+    (cl-letf* ((notify (symbol-function 'org-babel-eval-error-notify))
+               ((symbol-function 'org-babel-eval-error-notify)
+                (lambda (exit-code stderr)
+                  (if (or (not (numberp exit-code)) (> exit-code 0))
+                      (let ((stderr (string-trim (or stderr ""))))
+                        (error "cljbang-org: block exited with code %s%s"
+                               (if (numberp exit-code) exit-code "?")
+                               (if (string-empty-p stderr) ""
+                                 (concat ": " stderr))))
+                    (funcall notify exit-code stderr)))))
+      (let ((org-confirm-babel-evaluate nil))
+        (cljbang-org--goto-runnable file selector)
+        (cljbang-org--execute-at-point)))))
 
 (provide 'cljbang-org)
 ;;; cljbang-org.el ends here

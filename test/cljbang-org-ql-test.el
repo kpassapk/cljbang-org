@@ -26,6 +26,25 @@
                      %S '(and (heading \"Quadlets\") (level 1)))"
                   (cljbang-org-test--fixture "server.org")))))
 
+(ert-deftest cljbang-org-ql-test-select-body ()
+  "The query opts cljbang.org takes, org-ql takes too."
+  (skip-unless (require 'org-ql nil t))
+  (require 'cljbang-org-ql)
+  (should (equal ["The steps that run."]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org.ql/select %S '(heading \"Steps\") {:body? true})
+                        (mapv #(first (cljbang.org/lines (:body %%)))))"
+                  (cljbang-org-test--fixture "runnable.org")))))
+
+(ert-deftest cljbang-org-ql-test-call-blocks ()
+  (skip-unless (require 'org-ql nil t))
+  (require 'cljbang-org-ql)
+  (should (equal ["greet"]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org.ql/call-blocks %S '(heading \"Steps\"))
+                        (mapv :call))"
+                  (cljbang-org-test--fixture "runnable.org")))))
+
 (ert-deftest cljbang-org-ql-test-tables ()
   "One subtree, its nested table included; the maps are cljbang.org's."
   (skip-unless (require 'org-ql nil t))

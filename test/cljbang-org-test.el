@@ -96,6 +96,57 @@ Kills any visiting buffer and deletes the dir afterwards."
                         first)"
                   (cljbang-org-test--fixture "server.org")))))
 
+(ert-deftest cljbang-org-test-headings-planning ()
+  (let ((steps (cljbang-org-test--heading
+                (cljbang-org-test--fixture "runnable.org") "Steps")))
+    (should (equal "<2026-01-01 Thu>" (cljbang-get steps :scheduled)))
+    (should (equal "<2026-02-01 Sun>" (cljbang-get steps :deadline)))
+    (should (null (cljbang-get steps :body)))))
+
+(ert-deftest cljbang-org-test-headings-body ()
+  ":body is the heading's own text: no planning line, no drawer, and
+nothing belonging to a subheading."
+  (should (equal ["The steps that run.\n\n#+name: greet\n#+begin_src sh :results output\necho hello\n#+end_src"
+                  "#+begin_src sh :results output\necho second\n#+end_src\n\n#+call: greet()"]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/headings %S {:body? true})
+                        (keep :body)
+                        (take 2)
+                        vec)"
+                  (cljbang-org-test--fixture "runnable.org")))))
+
+;;; Tree
+
+(ert-deftest cljbang-org-test-tree-nests-by-level ()
+  (should (equal [["Quadlets" ["caddy.container" "caddy_data.volume" "notes"]]
+                  ["Demo" ["aly-odoo-16-demo.container"]]
+                  ["State checks" []]]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/headings %S)
+                        cljbang.org/tree
+                        (mapv #(vector (:title %%) (mapv :title (:children %%)))))"
+                  (cljbang-org-test--fixture "server.org")))))
+
+(ert-deftest cljbang-org-test-tree-leaves-and-input ()
+  "A leaf's :children is empty rather than missing, and the headings
+handed in keep none of it."
+  (let* ((headings (cljbang-org-headings
+                    (cljbang-org-test--fixture "server.org")))
+         (roots (cljbang-org-tree headings)))
+    (should (equal [] (cljbang-get (aref (cljbang-get (aref roots 0) :children) 0)
+                                   :children)))
+    (should (null (cljbang-get (aref headings 0) :children)))))
+
+(ert-deftest cljbang-org-test-tree-of-a-query ()
+  "Anything with a :level nests, so a filtered outline does too."
+  (should (equal ["Quadlets" "Demo" "State checks"]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/headings %S)
+                        (filter #(= 1 (:level %%)))
+                        cljbang.org/tree
+                        (mapv :title))"
+                  (cljbang-org-test--fixture "server.org")))))
+
 ;;; Keywords
 
 (ert-deftest cljbang-org-test-keywords ()
@@ -150,6 +201,44 @@ Kills any visiting buffer and deletes the dir afterwards."
                  (cljbang-org-test--tangle-targets
                   "(cljbang.org/src-blocks %S {:under \"Quadlets\"})"
                   (cljbang-org-test--fixture "server.org")))))
+
+;;; Call lines
+
+(ert-deftest cljbang-org-test-call-blocks ()
+  (should (equal [["greet" "greet()"]]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/call-blocks %S)
+                        (mapv #(vector (:call %%) (:value %%))))"
+                  (cljbang-org-test--fixture "runnable.org")))))
+
+(ert-deftest cljbang-org-test-call-blocks-under ()
+  (should (= 1 (cljbang-org-test--eval
+                "(count (cljbang.org/call-blocks %S {:under \"Steps\"}))"
+                (cljbang-org-test--fixture "runnable.org"))))
+  (should (equal []
+                 (cljbang-org-test--eval
+                  "(vec (cljbang.org/call-blocks %S {:under \"Failing\"}))"
+                  (cljbang-org-test--fixture "runnable.org")))))
+
+(ert-deftest cljbang-org-test-runnable-index-is-shared ()
+  "Src blocks and call lines are numbered together, so merging them
+gives every runnable step of the file in order."
+  (should (equal [[:src 0] [:src 1] [:call 2] [:src 3]]
+                 (cljbang-org-test--eval
+                  "(->> (concat (cljbang.org/src-blocks %S)
+                                (cljbang.org/call-blocks %S))
+                        (sort-by :index)
+                        (mapv #(vector (:type %%) (:index %%))))"
+                  (cljbang-org-test--fixture "runnable.org")
+                  (cljbang-org-test--fixture "runnable.org")))))
+
+(ert-deftest cljbang-org-test-index-counts-the-file-not-the-result ()
+  ":under narrows what comes back, never how the blocks are numbered."
+  (should (equal [3]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/src-blocks %S {:under \"Failing\"})
+                        (mapv :index))"
+                  (cljbang-org-test--fixture "runnable.org")))))
 
 ;;; Tables
 
@@ -279,6 +368,100 @@ Kills any visiting buffer and deletes the dir afterwards."
     (should (equal "Demo"
                    (cljbang-get (cljbang-org-test--heading file "Demo")
                                 :title)))))
+
+;;; Executing a block
+
+(ert-deftest cljbang-org-test-execute-by-name ()
+  (cljbang-org-test--with-temp-fixture file "runnable.org"
+    (should (equal "hello\n"
+                   (cljbang-org-test--eval
+                    "(cljbang.org/execute! %S \"greet\")" file)))))
+
+(ert-deftest cljbang-org-test-execute-by-index ()
+  (cljbang-org-test--with-temp-fixture file "runnable.org"
+    (should (equal "second\n"
+                   (cljbang-org-test--eval
+                    "(cljbang.org/execute! %S {:index 1})" file)))))
+
+(ert-deftest cljbang-org-test-execute-a-call-line ()
+  "A `#+call:' line runs the block it names and hands back its result,
+which is the whole reason `call-blocks' exists next to `src-blocks'."
+  (cljbang-org-test--with-temp-fixture file "runnable.org"
+    (should (equal "hello\n"
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/call-blocks %S)
+                          first
+                          (cljbang.org/execute! %S))"
+                    file file)))))
+
+(ert-deftest cljbang-org-test-execute-a-block-map ()
+  "A block map is a selector: its :name when it has one, else its :index."
+  (cljbang-org-test--with-temp-fixture file "runnable.org"
+    (should (equal "hello\n"
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/src-blocks %S)
+                          first
+                          (cljbang.org/execute! %S))"
+                    file file)))
+    (should (equal "second\n"
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/src-blocks %S)
+                          second
+                          (cljbang.org/execute! %S))"
+                    file file)))))
+
+(ert-deftest cljbang-org-test-execute-the-only-block ()
+  (cljbang-org-test--with-temp-fixture file "single.org"
+    (should (equal "only\n"
+                   (cljbang-org-test--eval "(cljbang.org/execute! %S)" file)))))
+
+(ert-deftest cljbang-org-test-execute-index-outlives-results ()
+  "The point of numbering rather than pointing: a block that writes
+its results back moves every position after it, and the indices stay."
+  (cljbang-org-test--with-temp-fixture file "runnable.org"
+    (let ((begins (lambda ()
+                    (cljbang-org-test--eval
+                     "(->> (cljbang.org/src-blocks %S) (mapv :begin))" file)))
+          (indices (lambda ()
+                     (cljbang-org-test--eval
+                      "(->> (cljbang.org/src-blocks %S) (mapv :index))" file))))
+      (let ((before (funcall begins)))
+        (cljbang-org-test--eval "(cljbang.org/execute! %S {:index 0})" file)
+        (should-not (equal before (funcall begins)))
+        (should (equal [0 1 3] (funcall indices)))
+        (should (equal "second\n"
+                       (cljbang-org-test--eval
+                        "(cljbang.org/execute! %S {:index 1})" file)))))))
+
+(ert-deftest cljbang-org-test-execute-writes-to-the-buffer-then-saves ()
+  (cljbang-org-test--with-temp-fixture file "runnable.org"
+    (cljbang-org-test--eval "(cljbang.org/execute! %S \"greet\")" file)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (should-not (search-forward "#+RESULTS" nil t)))
+    (cljbang-org-test--eval "(cljbang.org/save! %S)" file)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (should (search-forward "#+RESULTS" nil t)))))
+
+(ert-deftest cljbang-org-test-execute-failure-raises ()
+  "org-babel would pop a buffer and return the partial output; a
+caller gets the exit code and stderr as an error instead."
+  (cljbang-org-test--with-temp-fixture file "runnable.org"
+    (let ((err (should-error
+                (cljbang-org-test--eval
+                 "(cljbang.org/execute! %S {:index 3})" file))))
+      (should (string-match-p "code 3" (error-message-string err)))
+      (should (string-match-p "to-stderr" (error-message-string err))))))
+
+(ert-deftest cljbang-org-test-execute-bad-selectors ()
+  (let ((file (cljbang-org-test--fixture "runnable.org")))
+    ;; more than one block and nothing said which
+    (should-error (cljbang-org-test--eval "(cljbang.org/execute! %S)" file))
+    (should-error (cljbang-org-test--eval
+                   "(cljbang.org/execute! %S {:index 99})" file))
+    (should-error (cljbang-org-test--eval
+                   "(cljbang.org/execute! %S \"no such block\")" file))))
 
 ;;; Transclusion expansion
 

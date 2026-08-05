@@ -1,0 +1,29 @@
+#+TITLE: Runnable
+
+* Steps
+SCHEDULED: <2026-01-01 Thu> DEADLINE: <2026-02-01 Sun>
+:PROPERTIES:
+:CUSTOM_ID: steps
+:END:
+
+The steps that run.
+
+#+name: greet
+#+begin_src sh :results output
+echo hello
+#+end_src
+
+** Second
+
+#+begin_src sh :results output
+echo second
+#+end_src
+
+#+call: greet()
+
+* Failing
+
+#+begin_src sh :results output
+echo to-stderr >&2
+exit 3
+#+end_src

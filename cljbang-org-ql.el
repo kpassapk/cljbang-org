@@ -31,13 +31,15 @@
 ;;;###autoload
 (defun cljbang-org-ql-select (file query &optional opts)
   "Headings in FILE matching the org-ql QUERY sexp, as heading maps.
-OPTS: {:expand-transclusions? true} to query transcluded content too."
+OPTS: {:body? true} adds each heading's own text as :body;
+{:expand-transclusions? true} to query transcluded content too."
   (cljbang-org--with-file file
-    (cljbang-org--with-transclusions
-        (cljbang-org--opt opts :expand-transclusions?)
-      (apply #'vector
-             (org-ql-select (current-buffer) query
-               :action #'cljbang-org--heading-at-point)))))
+    (let ((cljbang-org--include-body (cljbang-org--opt opts :body?)))
+      (cljbang-org--with-transclusions
+          (cljbang-org--opt opts :expand-transclusions?)
+        (apply #'vector
+               (org-ql-select (current-buffer) query
+                 :action #'cljbang-org--heading-at-point))))))
 
 (defun cljbang-org-ql--under (file query opts collect)
   "COLLECT under each heading in FILE matching the org-ql QUERY sexp.
@@ -67,6 +69,15 @@ flat vector of block maps.  OPTS: {:expand-transclusions? true} expands
 transclusions inside each subtree before collecting, and removes them
 again."
   (cljbang-org-ql--under file query opts #'cljbang-org--collect-blocks))
+
+;;;###autoload
+(defun cljbang-org-ql-call-blocks (file query &optional opts)
+  "The `#+call:' lines under each heading in FILE matching QUERY.
+For every match the subtree is narrowed and its call lines collected;
+one flat vector of call maps.  OPTS: {:expand-transclusions? true}
+expands transclusions inside each subtree before collecting, and
+removes them again."
+  (cljbang-org-ql--under file query opts #'cljbang-org--collect-calls))
 
 ;;;###autoload
 (defun cljbang-org-ql-tables (file query &optional opts)

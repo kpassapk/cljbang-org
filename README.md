@@ -92,15 +92,42 @@ The result would look almost the same as the original elisp, but with some `el/`
 | `(headings file & [opts])` | every heading in the file, as a vector of heading maps |
 | `(keywords file)` | file keywords (`#+KEY: value` lines) as a map of lowercase keyword to vector of values, so repeated keywords like `#+TARGET:` all arrive |
 | `(src-blocks file & [opts])` | source blocks as a vector of block maps; `{:under selector}` restricts to every matching subtree |
+| `(call-blocks file & [opts])` | the `#+call:` lines as a vector of call maps; takes the same opts |
 | `(tables file & [opts])` | org tables as a vector of table maps; takes the same opts |
 
 Query opts also accept `{:expand-transclusions? true}` to scan transcluded
 content.
 
-A **heading map** has `:title :level :tags :todo :priority :properties :begin
-:end :file`. A **block map** has `:language :name :headers :body :begin :end
+A **heading map** has `:title :level :tags :todo :priority :scheduled :deadline
+:properties :begin :end :file`, and `:body` as well when the query was passed
+`{:body? true}` — the heading's own text, with the planning line, the drawer and
+anything belonging to a subheading left out.
+
+There is no `:max-level`, and no other filter: `headings` returns the whole
+outline and narrowing it is Clojure's job.
+
+```clojure
+(filter #(<= (:level %) 2) (org/headings f))
+```
+
+A **block map** has `:type :language :name :headers :body :index :begin :end
 :file`, where `:headers` is the resolved header-arg map with defaults
-included — an untangled block carries `:tangle "no"`.
+included — an untangled block carries `:tangle "no"`. A **call map** has `:type
+:name :call :arguments :value :index :begin :end :file`; `:call` names the block
+being invoked, `:arguments` is the text inside its parens, and `:value` is the
+call verbatim.
+
+A call line invokes a block named elsewhere — another heading, another file, the
+library of babel — so `src-blocks` does not see it. The two share one `:index`,
+which counts src blocks and call lines together in file order, so every runnable
+step of a file is:
+
+```clojure
+(sort-by :index (concat (org/src-blocks f) (org/call-blocks f)))
+```
+
+`:index` counts blocks in the *file*, not in the result, so it still names the
+block under `{:under ...}`.
 
 A **table map** has `:name :rows :caption :formulas :begin :end :file`.
 `:rows` is every row in file order — a vector of trimmed cell strings, with
@@ -113,9 +140,20 @@ verbatim. Pipes inside a src or example block are text, not a table, and
 
 | Function | Returns |
 |---|---|
+| `(tree headings)` | those headings nested by `:level`, as a vector of the roots |
 | `(lines x)` | `x` as a vector of non-blank, trimmed lines, whatever shape it arrived in |
 | `(rows x)` | the data rows of a table, horizontal rules dropped |
 | `(table->maps x)` | the data rows as maps keyed by column name |
+
+`tree` copies each heading and adds a `:children` vector, so the input is
+untouched and a leaf's `:children` is empty rather than missing. Every heading
+map has a `:level`, so it nests whatever produced them — the whole outline, a
+filtered one, or an org-ql result:
+
+```clojure
+(org/tree (org/headings "box.org"))
+(org/tree (ql/select "box.org" '(todo "TODO")))
+```
 
 The same list of names reaches a block as text, as a vector of strings, or as a
 table — a vector of one-element rows — depending on how the block that produced
@@ -164,6 +202,7 @@ keywords, downcased with runs of non-alphanumerics collapsed to one dash, so
 |---|---|
 | `(select file query & [opts])` | headings matching an [org-ql][org-ql] query sexp, as heading maps |
 | `(src-blocks file query & [opts])` | source blocks under each matching heading, one flat vector |
+| `(call-blocks file query & [opts])` | `#+call:` lines under each matching heading, one flat vector |
 | `(tables file query & [opts])` | org tables under each matching heading, one flat vector |
 
 The query sexp goes to org-ql verbatim; the action is always this library's
@@ -198,9 +237,34 @@ Selectors will not grow `:tags`, `:todo` or regexp matching. To find headings,
 | Function | Does |
 |---|---|
 | `(cut-subtree! file selector)` | cuts every matching subtree, re-locating before each cut; returns the count |
+| `(execute! file & [selector])` | runs one src block or `#+call:` line; returns its result |
 | `(save! file)` | saves the visiting buffer if modified |
 | `(revert! file)` | reloads from disk, discarding buffer edits |
 | `(tangle! file)` | tangles the file; returns the tangled file names |
+
+### Running blocks
+
+`execute!` takes a block name, a map with `:name` or `:index`, or nothing at all
+when the file holds exactly one runnable block. A block map or call map from a
+query is a selector too — its `:name` wins, else its `:index`.
+
+```clojure
+(org/execute! f)                    ; the only block
+(org/execute! f "deploy")           ; the block named deploy
+(org/execute! f {:index 2})         ; the third runnable block
+(->> (org/src-blocks f) (filter #(= "sh" (:language %))) first (org/execute! f))
+```
+
+Selecting by `:index` rather than by position is the point. A block that writes
+its results back moves every position after it, so running a file's blocks in
+turn would invalidate the `:begin` of every block still to run — the indices do
+not move.
+
+Results land in the buffer, and `save!` is the separate step that writes them to
+disk; `revert!` throws them away. A block that exits non-zero raises, carrying
+the exit code and what it wrote to stderr — org-babel would otherwise pop up a
+buffer, hand back the partial output, and let the caller think it worked. Output
+on stderr with a zero exit is not a failure and does not raise.
 
 ## Notes
 

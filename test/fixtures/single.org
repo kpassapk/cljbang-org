@@ -1,0 +1,7 @@
+#+TITLE: Single
+
+Exactly one runnable block, so it needs no selector.
+
+#+begin_src sh :results output
+echo only
+#+end_src
