@@ -115,6 +115,16 @@ nothing belonging to a subheading."
                         vec)"
                   (cljbang-org-test--fixture "runnable.org")))))
 
+(ert-deftest cljbang-org-test-headings-body-of-an-empty-entry ()
+  "An entry with no text of its own does not take the next heading's:
+skipping the meta data of an empty entry lands on that heading."
+  (should (equal [nil "text"]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/headings %S {:body? true})
+                        (filter #(#{\"Empty\" \"After the empty one\"} (:title %%)))
+                        (mapv :body))"
+                  (cljbang-org-test--fixture "runnable.org")))))
+
 ;;; Tree
 
 (ert-deftest cljbang-org-test-tree-nests-by-level ()

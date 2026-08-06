@@ -27,3 +27,8 @@ echo second
 echo to-stderr >&2
 exit 3
 #+end_src
+
+* Empty
+* After the empty one
+
+text

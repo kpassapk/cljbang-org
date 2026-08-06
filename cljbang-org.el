@@ -139,11 +139,15 @@ Bound by the query, read by `cljbang-org--heading-at-point', so
 The heading's own prose: planning line, drawers and subheadings are
 not part of it."
   (save-excursion
-    (org-end-of-meta-data t)
-    (let* ((beg (point))
-           (end (save-excursion (outline-next-heading) (point)))
-           (body (string-trim (buffer-substring-no-properties beg (max beg end)))))
-      (unless (string-empty-p body) body))))
+    ;; The entry ends at the next heading, measured from this one.  Measuring
+    ;; it after `org-end-of-meta-data' would be a heading too late whenever
+    ;; the entry is empty: skipping the meta data then lands on the next
+    ;; heading, and this entry would claim that one's text as its own.
+    (let ((end (save-excursion (outline-next-heading) (point))))
+      (org-end-of-meta-data t)
+      (let* ((beg (min (point) end))
+             (body (string-trim (buffer-substring-no-properties beg end))))
+        (unless (string-empty-p body) body)))))
 
 (defun cljbang-org--properties-at-point ()
   "Drawer properties of the heading at point, as a map with keyword keys."
