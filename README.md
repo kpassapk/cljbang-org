@@ -6,7 +6,7 @@ Org mode as Clojure data for [cljbang.el][cljbang].
 
 This library lets you query and edit org files with a more Clojure-friendly API. It optionally integrates with [org-ql][org-ql] and [org-transclusion][org-transclusion].
 
-[cljbang]: https://github.com/kpassapk/cljbang.el
+[cljbang]: https://github.com/borkdude/cljbang.el
 [org-ql]: https://github.com/alphapapa/org-ql
 [org-transclusion]: https://github.com/nobiot/org-transclusion
 
@@ -140,10 +140,10 @@ Congratulations!
 Org is not very picky about data shapes. In org-babel, a list of names
 reaches a block as text, as a vector of strings, or as a table — a vector of
 one-element rows — depending on how the block that produced it was run. Worse,
-a `:var` naming another block *re-runs* that block with `:results none`, which
-overrides the block's own `:results`, so a shell block that displays as text is
+a `:var` naming another block re-runs that block with `:results none`, which
+overrides the block's own `:results`; so a shell block that displays as text is
 handed over as a table. The visible `#+RESULTS:` does not tell you what the var
-will hold. 
+will actually hold.
 
 Instead of branching on shape, use `lines`:
 
@@ -201,6 +201,8 @@ If you are an elisp expert, and routinely script org mode to your liking, this i
 Goals:
 
 - Be maximalist about org mode. We have emacs. It's not about a "subset" of org.
+  - Includes org-babel, exports, etc
+  - Treat transclusion and 
 - The API should read like Clojure. (Even if it's less performant.)
 
 ## Roadmap
@@ -219,3 +221,6 @@ The rest, in no particular order:
 - "current buffer" concept. pass nil or provide a different arity
 - file keywords (`#+TITLE:`, `#+TARGET:`), if they earn their place — via
   org-element, not a regex, so `#+name:` on a block stays the block's
+- generate API docs from comment blocks to avoid drift
+- :under re-parse whole buffer per match (not performant for large files)
+- if user is hand-editing a file and changes accumulate, what will happen? any way to guard against that?

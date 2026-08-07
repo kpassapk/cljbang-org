@@ -1,0 +1,7 @@
+# Dependencies `make deps` fetches
+.deps/
+
+# Personal make overrides: CLJBANG_DIR, ELPA, EMACS
+local.mk
+
+*.elc
