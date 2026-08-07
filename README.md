@@ -202,7 +202,7 @@ Goals:
 
 - Be maximalist about org mode. We have emacs. It's not about a "subset" of org.
   - Includes org-babel, exports, etc
-  - Treat transclusion and 
+  - Treat transclusion and org-ql as an extended part of org
 - The API should read like Clojure. (Even if it's less performant.)
 
 ## Roadmap
