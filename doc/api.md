@@ -88,8 +88,8 @@ block under `{:under ...}`.
 `:name :rows :caption :formulas :begin :end :file`.
 
 `:rows` is every row in file order — a vector of trimmed cell strings, with
-`:hline` for each horizontal rule — so it is lossless and the coercions below
-can take their input straight from it. `:formulas` holds the `#+TBLFM:` lines
+`:hline` for each horizontal rule — so it is lossless and the shaping functions
+below can take their input straight from it. `:formulas` holds the `#+TBLFM:` lines
 verbatim. Pipes inside a src or example block are text, not a table, and
 `table.el` tables are skipped.
 
@@ -106,7 +106,8 @@ The query sexp goes to org-ql verbatim; the action is always this library's
 extractor, so results are the same maps `cljbang.org` returns — no imperative
 lambda at point. `src-blocks` and `tables` are `cljbang.org`'s `{:under
 selector}` with a search where the selector would be: one heading you already
-mean becomes every heading matching a query, and the coercions apply unchanged.
+mean becomes every heading matching a query, and the shaping functions apply
+unchanged.
 
 ## Effects — `cljbang.org`
 
@@ -218,7 +219,7 @@ cross-file move needs it on each.
 | `(revert! file)` | reloads from disk, discarding buffer edits |
 | `(tangle! file)` | tangles the file; returns the tangled file names |
 
-## Coercion
+## Shaping results
 
 | Function | Returns |
 |---|---|

@@ -47,7 +47,7 @@ See the [API Documentation][api] for more.
 
 ## Querying org data
 
-Say `server.org` tangles some files, and pulls one more in from another file via transclusion:
+Say `server.org` tangles some files, and pulls one more in from another file via [transclusion][org-transclusion]:
 
 ```org
 * Quadlets
@@ -60,7 +60,7 @@ Say `server.org` tangles some files, and pulls one more in from another file via
 #+transclude: [[file:common.org::*Bar][Bar]]  ; provides bar.container
 ```
 
-To get a list of the files being tangled under "Quadlets", [transclusions](https://github.com/nobiot/org-transclusion) included, in raw elisp:
+To get a list of the files being tangled under "Quadlets", transclusions included, in elisp:
 
 ```elisp
 (let ((targets
@@ -83,12 +83,12 @@ To get a list of the files being tangled under "Quadlets", [transclusions](https
 
 Not the easiest API :) (Granted, this is a contrived example to show just how bad it can get.)
 
-If you tried to use `cljbang` directly, things would not get much better. There is just too much mutation going on. 
+If you tried to use [cljbang][cljbang] directly, things would not get much better. There is just too much mutation going on. 
 The result would look almost the same as the original elisp, but with some `el/` and `el!` thrown in.
 
 `cljbang.org.ql` provides a `src-blocks` function that returns data structures, which makes this query easier to express:
 
-```clj
+```clojure
   (->> (ql/src-blocks "file.org"
                       '(and (heading "Quadlets") (level 1))
                       {:expand-transclusions? true})
@@ -101,7 +101,7 @@ Nicer, right?
 
 This relies on an [org-ql][org-ql] query to select the "Quadlets" heading at level 1. Then it transforms the resulting (Clojure) map. If we wanted to operate on headings, instead of the source blocks which are under them, we would pass the org-ql query to `ql/select` instead:
 
-```
+```clojure
 (->> (ql/select "server.org"
                 '(and (heading "Quadlets") (level 1)))
      (keep #(get-in %% [:properties :CUSTOM_ID]))
@@ -110,7 +110,7 @@ This relies on an [org-ql][org-ql] query to select the "Quadlets" heading at lev
 
 A lot of org operations on schedules, deadlines, TODOs etc. operate at the heading level. If you don't use org-ql, there is a simpler `org/headings` version:
 
-```
+```clojure
 (->> (org/headings "server.org")
 	 (filter #(= (:level %) 1))
      (keep #(get-in %% [:properties :CUSTOM_ID]))
@@ -125,23 +125,60 @@ The basic pattern is to start with some sort of selector, possibly obtained by a
 
 Effects are more tricky than queries, since they modify the underlying emacs buffer and make other things move around. Line-based editing is not super helpful when you can't see the buffer, like in a script.
 
-To mitigate this weirdness, at least partially, each effectful function takes a selector, and runs it right before performing an edit.
+To mitigate this weirdness, at least partially, each effectful function takes a selector, and runs it right before performing an edit. Here's a special little snippet you might run when you've finished all of today's tasks.
 
-## Roadmap
+```clojure
+(->> (ql/select f '(and (todo "TODO") (deadline :to today)))
+     (map #(org/set-todo! f % "DONE"))
+     doall)
+```
 
-These two are probably important:
+Congratulations!
 
-- timestamp parsing or conversion for deadlines and scheduled items
-- Accept multiple files, just like org and org-ql.
+## Shaping results
 
-  - Possibly accept a prebuilt `:agenda`?
-- Add heading keys: :closed, :effort, 
-- Support :id (right now only `:custom-id`)
-- Org construction
-- Add a navigator like `{:path ["Project" "Notes"]}` or `id` and separate cases where multiple matches are acceptable. 
-- "current buffer" concept. pass nil or provide a different arity
-- remove / redo "keywords" (regex-based at the moment)
-- 
+Queries stay faithful to the file. Effects modify the buffer. The third part
+of the API does neither: it reshapes what a query returned into the shape your
+code actually wants. Data in, data out — no file argument, no buffer, no `!`.
+
+Some of this is defensive, because org hands the same logical data over in
+more than one shape and does not tell you which one arrived. A list of names
+reaches a block as text, as a vector of strings, or as a table — a vector of
+one-element rows — depending on how the block that produced it was run. Worse,
+a `:var` naming another block *re-runs* that block with `:results none`, which
+overrides the block's own `:results`, so a shell block that displays as text is
+handed over as a table. The visible `#+RESULTS:` does not tell you what the var
+will hold. So instead of branching on shape, use `lines`:
+
+```clojure
+(org/lines "a\nb")        ;=> ["a" "b"]
+(org/lines ["a" "b"])     ;=> ["a" "b"]
+(org/lines [["a"] ["b"]]) ;=> ["a" "b"]
+```
+
+`rows` and `table->maps` do the same job for tables. Both take a table map from
+`org/tables`, its `:rows`, or the list a `:var` hands over — babel writes a
+horizontal rule as `hline` there and `:hline` here, and neither caller should
+have to know which.
+
+```clojure
+(->> (org/tables "hosts.org")
+     (filter #(= "hosts" (:name %)))
+     first
+     org/table->maps
+     (map :ip))
+```
+
+The rest is structural. Every query returns headings flat, with `:level` as the
+only nesting org gives you, so `tree` nests them — whatever produced them:
+
+```clojure
+(org/tree (org/headings "box.org"))
+(org/tree (ql/select "box.org" '(todo "TODO")))
+```
+
+See the [API Documentation][api] for the exact rules — which row is the header,
+how column names become keywords, what happens to a short row.
 
 ## Installing
 
@@ -160,3 +197,30 @@ These two are probably important:
 ```
 
 The latter needs [org-ql][org-ql] installed.
+
+## Target audience and goals
+
+This project is meant for the Clojure user who also uses emacs and org mode, and could merge those two worlds just a little bit better.
+
+It may also work for people who work extensively with org mode, and who are Clojure-curious.
+
+If you are an elisp expert, and routinely script org mode to your liking, this is probably not for you.
+
+Goals:
+
+- Be maximalist about org mode. We have emacs. It's not about a "subset" of org.
+
+## Roadmap
+
+These two are probably important:
+
+- timestamp parsing or conversion for deadlines and scheduled items
+- Accept multiple files, just like org and org-ql.
+
+  - Possibly accept a prebuilt `:agenda`?
+- Add heading keys: :closed, :effort, 
+- Support :id (right now only `:custom-id`)
+- Org construction
+- Add a navigator like `{:path ["Project" "Notes"]}` or `id` and separate cases where multiple matches are acceptable. 
+- "current buffer" concept. pass nil or provide a different arity
+- remove / redo "keywords" (regex-based at the moment)
