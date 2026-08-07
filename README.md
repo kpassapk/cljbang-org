@@ -133,19 +133,15 @@ To mitigate this weirdness, at least partially, each effectful function takes a 
      doall)
 ```
 
-Congratulations!
+Congratulations for finishing your TODOs!
 
 ## Shaping results
 
 Org is not very picky about data shapes. In org-babel, a list of names
 reaches a block as text, as a vector of strings, or as a table — a vector of
-one-element rows — depending on how the block that produced it was run. Worse,
-a `:var` naming another block re-runs that block with `:results none`, which
-overrides the block's own `:results`; so a shell block that displays as text is
-handed over as a table. The visible `#+RESULTS:` does not tell you what the var
-will actually hold.
+one-element rows — depending on how the block that produced it was run. 
 
-Instead of branching on shape, use `lines`:
+Use `lines` to normalize:
 
 ```clojure
 (org/lines "a\nb")        ;=> ["a" "b"]
@@ -169,6 +165,10 @@ Instead of branching on shape, use `lines`:
 (org/tree (org/headings "box.org"))
 (org/tree (ql/select "box.org" '(todo "TODO")))
 ```
+
+I have found these utility functions most useful when using [ob-cljbang][ob-cljbang]. They may be useful in other contexts too.
+
+[ob-cljbang]: https://github.com/kpassapk/ob-cljbang
 
 See the [API Documentation][api] for more.
 
@@ -224,3 +224,4 @@ The rest, in no particular order:
 - generate API docs from comment blocks to avoid drift
 - :under re-parse whole buffer per match (not performant for large files)
 - if user is hand-editing a file and changes accumulate, what will happen? any way to guard against that?
+  

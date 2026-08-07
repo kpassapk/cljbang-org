@@ -1060,15 +1060,16 @@ block it names, which is the one that has to be loaded."
       ;; A call line runs the block it names, and inherits that block's
       ;; language, so that is the backend to load.  `org-babel-lob-
       ;; execute-maybe' answers whether it ran something and drops what
-      ;; the block returned, so go the one step under it -- which org
-      ;; renamed along the way.
+      ;; the block returned, so go the one step under it -- which grew
+      ;; an EXECUTOR-TYPE argument in org 9.6, and does not take one on
+      ;; the org 9.5 that ships with emacs 28.
       (let ((info (or (org-babel-lob-get-info datum)
                       (error "cljbang-org: call line names no block: %s"
                              (org-element-property :call datum)))))
         (cljbang-org--require-lang (car info))
-        (if (fboundp 'org-babel-lob-execute)
-            (org-babel-lob-execute info)
-          (org-babel-execute-src-block nil info nil 'babel-call))))))
+        (if (>= (cdr (func-arity 'org-babel-execute-src-block)) 4)
+            (org-babel-execute-src-block nil info nil 'babel-call)
+          (org-babel-execute-src-block nil info))))))
 
 ;;;###autoload
 (defun cljbang-org-execute! (file &optional selector)
