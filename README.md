@@ -104,7 +104,7 @@ This relies on an [org-ql][org-ql] query to select the "Quadlets" heading at lev
 ```clojure
 (->> (ql/select "server.org"
                 '(and (heading "Quadlets") (level 1)))
-     (keep #(get-in %% [:properties :CUSTOM_ID]))
+     (keep #(get-in % [:properties :CUSTOM_ID]))
      first)
 ```
 
@@ -113,7 +113,7 @@ A lot of org operations on schedules, deadlines, TODOs etc. operate at the headi
 ```clojure
 (->> (org/headings "server.org")
 	 (filter #(= (:level %) 1))
-     (keep #(get-in %% [:properties :CUSTOM_ID]))
+     (keep #(get-in % [:properties :CUSTOM_ID]))
      first)
 ```
 
@@ -129,7 +129,7 @@ To mitigate this weirdness, at least partially, each effectful function takes a 
 
 ```clojure
 (->> (ql/select f '(and (todo "TODO") (deadline :to today)))
-     (map #(org/set-todo! f % "DONE"))
+     (map #(org/set-todo! f % "DONE")) ;; <- re-run here
      doall)
 ```
 
@@ -137,18 +137,15 @@ Congratulations!
 
 ## Shaping results
 
-Queries stay faithful to the file. Effects modify the buffer. The third part
-of the API does neither: it reshapes what a query returned into the shape your
-code actually wants. Data in, data out — no file argument, no buffer, no `!`.
-
-Some of this is defensive, because org hands the same logical data over in
-more than one shape and does not tell you which one arrived. A list of names
+Org is not very picky about data shapes. In org-babel, a list of names
 reaches a block as text, as a vector of strings, or as a table — a vector of
 one-element rows — depending on how the block that produced it was run. Worse,
 a `:var` naming another block *re-runs* that block with `:results none`, which
 overrides the block's own `:results`, so a shell block that displays as text is
 handed over as a table. The visible `#+RESULTS:` does not tell you what the var
-will hold. So instead of branching on shape, use `lines`:
+will hold. 
+
+Instead of branching on shape, use `lines`:
 
 ```clojure
 (org/lines "a\nb")        ;=> ["a" "b"]
@@ -156,10 +153,7 @@ will hold. So instead of branching on shape, use `lines`:
 (org/lines [["a"] ["b"]]) ;=> ["a" "b"]
 ```
 
-`rows` and `table->maps` do the same job for tables. Both take a table map from
-`org/tables`, its `:rows`, or the list a `:var` hands over — babel writes a
-horizontal rule as `hline` there and `:hline` here, and neither caller should
-have to know which.
+`rows` and `table->maps` do the same job for tables (with headings), outputting maps. 
 
 ```clojure
 (->> (org/tables "hosts.org")
@@ -169,16 +163,14 @@ have to know which.
      (map :ip))
 ```
 
-The rest is structural. Every query returns headings flat, with `:level` as the
-only nesting org gives you, so `tree` nests them — whatever produced them:
+`tree` produces a nested data structure from a heading map.
 
 ```clojure
 (org/tree (org/headings "box.org"))
 (org/tree (ql/select "box.org" '(todo "TODO")))
 ```
 
-See the [API Documentation][api] for the exact rules — which row is the header,
-how column names become keywords, what happens to a short row.
+See the [API Documentation][api] for more.
 
 ## Installing
 
@@ -209,18 +201,21 @@ If you are an elisp expert, and routinely script org mode to your liking, this i
 Goals:
 
 - Be maximalist about org mode. We have emacs. It's not about a "subset" of org.
+- The API should read like Clojure. (Even if it's less performant.)
 
 ## Roadmap
 
 These two are probably important:
 
 - timestamp parsing or conversion for deadlines and scheduled items
-- Accept multiple files, just like org and org-ql.
+- Accept multiple files, just like org-ql.
 
-  - Possibly accept a prebuilt `:agenda`?
+The rest, in no particular order:
+- Possibly accept a prebuilt `:agenda`?
 - Add heading keys: :closed, :effort, 
 - Support :id (right now only `:custom-id`)
 - Org construction
 - Add a navigator like `{:path ["Project" "Notes"]}` or `id` and separate cases where multiple matches are acceptable. 
 - "current buffer" concept. pass nil or provide a different arity
-- remove / redo "keywords" (regex-based at the moment)
+- file keywords (`#+TITLE:`, `#+TARGET:`), if they earn their place — via
+  org-element, not a regex, so `#+name:` on a block stays the block's

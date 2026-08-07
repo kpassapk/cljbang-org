@@ -186,18 +186,6 @@ handed in keep none of it."
                         (mapv :title))"
                   (cljbang-org-test--fixture "server.org")))))
 
-;;; Keywords
-
-(ert-deftest cljbang-org-test-keywords ()
-  (should (equal ["Test server"]
-                 (cljbang-org-test--eval
-                  "(:title (cljbang.org/keywords %S))"
-                  (cljbang-org-test--fixture "server.org"))))
-  (should (equal [".. (project)" "/ssh:app@example: (server)"]
-                 (cljbang-org-test--eval
-                  "(:target (cljbang.org/keywords %S))"
-                  (cljbang-org-test--fixture "server.org")))))
-
 ;;; Src blocks and tangle targets
 
 (ert-deftest cljbang-org-test-src-blocks-all ()

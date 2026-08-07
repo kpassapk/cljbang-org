@@ -34,7 +34,6 @@ Example:
 | Function | Returns |
 |---|---|
 | `(headings file & [opts])` | every heading in the file, as a vector of heading maps |
-| `(keywords file)` | file keywords (`#+KEY: value` lines) as a map of lowercase keyword to vector of values |
 | `(src-blocks file & [opts])` | source blocks as a vector of block maps; `{:under selector}` restricts to every matching subtree |
 | `(call-blocks file & [opts])` | the `#+call:` lines as a vector of call maps; takes the same opts |
 | `(tables file & [opts])` | org tables as a vector of table maps; takes the same opts |

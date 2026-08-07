@@ -20,8 +20,8 @@
 ;;        (map :title))
 ;;
 ;; Queries return read-only snapshots: flat maps for headings, source
-;; blocks, call lines, tables and file keywords, extracted at point with
-;; org's cheap APIs, never the raw org-element AST.  Positions in those
+;; blocks, call lines and tables, extracted at point with org's cheap
+;; APIs, never the raw org-element AST.  Positions in those
 ;; maps (:begin :end) are provenance, not handles: effect functions (the
 ;; ! names) take a selector and re-locate from scratch, so stale
 ;; positions cannot corrupt an edit.  Effects edit the visiting buffer;
@@ -399,25 +399,6 @@ outline, and narrowing it is Clojure's job.
           (org-map-entries
            (lambda () (push (cljbang-org--heading-at-point) acc)))
           (apply #'vector (nreverse acc)))))))
-
-;;;###autoload
-(defun cljbang-org-keywords (file)
-  "File keywords (#+KEY: value lines) of FILE.
-A map of lowercase keyword keys to vectors of values, in file order, so
-repeated keywords like #+TARGET: all arrive."
-  (cljbang-org--with-file file
-    (goto-char (point-min))
-    (let (acc)
-      (while (re-search-forward
-              "^[ \t]*#\\+\\([[:alnum:]_-]+\\):[ \t]*\\(.*?\\)[ \t]*$" nil t)
-        (let ((key (downcase (match-string-no-properties 1)))
-              (val (match-string-no-properties 2)))
-          (unless (string-match-p "\\`\\(begin\\|end\\)_" key)
-            (push val (alist-get key acc nil nil #'equal)))))
-      (let ((h (make-hash-table :test #'equal)))
-        (pcase-dolist (`(,k . ,vs) acc)
-          (puthash (intern (concat ":" k)) (apply #'vector (nreverse vs)) h))
-        h))))
 
 ;;; Runnable blocks: what an :index counts
 
