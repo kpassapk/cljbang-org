@@ -1,32 +1,40 @@
 # API
 
+Queries return flat read-only maps. (Alas, they are not immutable data structures, which are not part of the design of cljbang.
+
+Every effect function (the `!` names) takes a selector and searches for its heading fresh, so stale positions cannot corrupt an edit.
+
+Effects modify the visiting buffer only. `save!` persists to disk; `revert!` discards buffer edits.
+
+Passing `{:expand-transclusions? true}` to a query expands transclusions for the duration of that query, removes them again, and leaves the buffer as found.  Effects refuse to run while an expansion is active, because positions in expanded  text do not belong to the file.
+
 ## Selectors
 
 Anywhere a `selector` is expected, pass:
 
 - a title string — `"Quadlets"`
-- `{:custom-id "quadlets"}` — matches on the `CUSTOM_ID` property
+- `{:custom-id "quadlets"}`
 - `{:title "Quadlets" :level 1}` — `:level` optional
-- a heading map returned by a query — its `CUSTOM_ID` wins, else title and level
+- a heading map returned by a `ql/select`
 
-Every map returned by `ql/select`  is a selector.
+Example:
 
 ```clj
+(require '[cljbang.org.ql :as ql])
+
 (->> (ql/select f '(and (todo "DONE") (tags "archive")))
-     (map #(org/cut-subtree! f %))
+     (map #(org/refile! f % {:file "archive.org"}))
      doall)
 (org/save! f)
+(org/save! "archive.org")
 ```
-
-Selectors will not grow `:tags`, `:todo` or regexp matching. To find headings,
-`filter` over `(org/headings f)` or write an org-ql query.
 
 ## Queries — `cljbang.org`
 
 | Function | Returns |
 |---|---|
 | `(headings file & [opts])` | every heading in the file, as a vector of heading maps |
-| `(keywords file)` | file keywords (`#+KEY: value` lines) as a map of lowercase keyword to vector of values, so repeated keywords like `#+TARGET:` all arrive |
+| `(keywords file)` | file keywords (`#+KEY: value` lines) as a map of lowercase keyword to vector of values |
 | `(src-blocks file & [opts])` | source blocks as a vector of block maps; `{:under selector}` restricts to every matching subtree |
 | `(call-blocks file & [opts])` | the `#+call:` lines as a vector of call maps; takes the same opts |
 | `(tables file & [opts])` | org tables as a vector of table maps; takes the same opts |
@@ -102,9 +110,109 @@ mean becomes every heading matching a query, and the coercions apply unchanged.
 
 ## Effects — `cljbang.org`
 
+Every effect that takes a selector edits **each** matching heading and returns
+how many it touched. `0` = no match.
+
+### Fields of a heading
+
 | Function | Does |
 |---|---|
-| `(cut-subtree! file selector)` | cuts every matching subtree, re-locating before each cut; returns the count |
+| `(set-todo! file selector state)` | sets the TODO keyword; `nil` clears it |
+| `(schedule! file selector time)` | sets `SCHEDULED`; `nil` removes it |
+| `(deadline! file selector time)` | sets `DEADLINE`; `nil` removes it |
+| `(set-priority! file selector priority)` | sets the priority cookie; `nil` removes it |
+| `(set-tags! file selector tags)` | replaces the tags; `nil` removes them all |
+| `(set-property! file selector key value)` | sets a drawer property; `nil` removes it |
+
+These go through org's own command for each field — `org-todo`, `org-schedule`,
+`org-set-tags` — rather than rewriting the headline. That is the reason they
+exist: marking a repeating task `DONE` rolls its `SCHEDULED` stamp forward,
+writes `LAST_REPEAT` and puts the state back to `TODO`; a `DONE` gets its
+`CLOSED` stamp; a state change reaches the logbook. A regexp over the headline
+gets none of that right, and every caller gets it wrong differently.
+
+```clj
+(->> (ql/select f '(and (todo "TODO") (deadline :to today)))
+     (map #(org/set-todo! f % "DONE"))
+     doall)
+(org/save! f)
+```
+
+A TODO keyword the file does not declare is an error. Logging that would open a
+note buffer and wait for prose is written as a timestamp instead — nothing is
+going to type it.
+
+`time` is anything `org-schedule` reads: `"<2026-09-10 Thu>"`, `"2026-09-10"`,
+one with a time of day, or a delta `"+2d"` from the stamp already there. A
+repeater in the new stamp is kept; without one the old stamp's repeater carries
+over, so re-scheduling a weekly task leaves it weekly.
+
+`priority` is `"A"`, `:A`, `?A`, or an integer where the file's priorities are
+numeric. Removing a cookie that is not there is not an error, though
+`org-priority` makes it one: a script setting a field to `nil` is saying what it
+wants the heading to look like, not asserting what it looks like now.
+
+Property keys are upcased, the shape queries return them in, so `:owner` and
+`:OWNER` name one property.
+
+Tags **replace**, they do not merge, and there is no `add-tags!` to go with
+`set-tags!`: `:tags` is a set, so adding and removing one is `conj` and `disj`
+before the call, where Clojure can see it.
+
+```clj
+(let [h (first (ql/select f '(heading "Deploy")))]
+  (org/set-tags! f h (conj (:tags h) "urgent")))
+```
+
+### Structure
+
+| Function | Does |
+|---|---|
+| `(insert-heading! file heading & [opts])` | writes a new heading; returns how many were inserted |
+| `(refile! file selector target)` | moves every matching subtree to `target` |
+
+`insert-heading!` takes a map shaped like the ones queries return. Only `:title`
+is required; `:level :todo :priority :tags :scheduled :deadline :properties` and
+`:body` are used when present, each through org's own command for it, so what
+lands is what org would have written. `{:under selector}` appends it as the last
+child of every matching heading, one level below the parent unless `:level` says
+otherwise; without it the heading goes at the end of the file at its `:level`, or
+at level 1.
+
+```clj
+(org/insert-heading! f {:title "Renew passport" :todo "TODO"
+                        :deadline "<2026-10-01 Thu>" :tags #{"admin"}
+                        :body "Book the appointment."}
+                     {:under "Inbox"})
+```
+
+`:CATEGORY` is skipped: org computes it, so a heading map carries one whether the
+file wrote one or not, and a queried heading re-inserted elsewhere should not
+grow a drawer entry the file never had.
+
+`refile!` is how a subtree leaves where it is, and the only way: **there is no
+delete**. Archiving a heading is a refile to the file it belongs in, which is
+what org means by archiving anyway, and no effect here can silently lose text.
+`target` is a map: `{:file "archive.org"}` is the file it lands in, this one by default;
+`{:under selector}` is the heading it becomes the last child of — the first
+match, since a subtree lands in one place — and the end of that file by default;
+`{:level n}` overrides the level it is re-levelled to. A target
+inside the subtree being moved is an error rather than a corrupted file.
+
+```clj
+(doseq [h (ql/select f '(and (todo "DONE") (tags "archive")))]
+  (org/refile! f h {:file "archive.org" :under "2026"}))
+(org/save! f)
+(org/save! "archive.org")
+```
+
+Both files are left modified and neither is saved; `save!` takes one file, so a
+cross-file move needs it on each.
+
+### The file
+
+| Function | Does |
+|---|---|
 | `(execute! file & [selector])` | runs one src block or `#+call:` line; returns its result |
 | `(save! file)` | saves the visiting buffer if modified |
 | `(revert! file)` | reloads from disk, discarding buffer edits |

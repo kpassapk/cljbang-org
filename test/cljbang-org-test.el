@@ -59,6 +59,35 @@ Kills any visiting buffer and deletes the dir afterwards."
            (kill-buffer)))
        (delete-directory cljbang-org-test--tmp t))))
 
+(defmacro cljbang-org-test--with-temp-fixtures (bindings &rest body)
+  "Copy several fixtures into one temp dir and run BODY.
+BINDINGS is a list of (VAR NAME); each fixture NAME lands in the same
+directory, so a cross-file effect has somewhere to point.  Kills any
+visiting buffers and deletes the dir afterwards."
+  (declare (indent 1))
+  `(let* ((cljbang-org-test--tmp (make-temp-file "cljbang-org" t))
+          ,@(mapcar (lambda (b)
+                      `(,(car b) (expand-file-name ,(cadr b)
+                                                   cljbang-org-test--tmp)))
+                    bindings))
+     ,@(mapcar (lambda (b)
+                 `(copy-file (cljbang-org-test--fixture ,(cadr b)) ,(car b)))
+               bindings)
+     (unwind-protect
+         (progn ,@body)
+       ,@(mapcar (lambda (b)
+                   `(when-let ((buf (find-buffer-visiting ,(car b))))
+                      (with-current-buffer buf
+                        (set-buffer-modified-p nil)
+                        (kill-buffer))))
+                 bindings)
+       (delete-directory cljbang-org-test--tmp t))))
+
+(defun cljbang-org-test--text (file)
+  "Text of FILE's visiting buffer, which is where an effect leaves it."
+  (with-current-buffer (cljbang-org--buffer file)
+    (buffer-substring-no-properties (point-min) (point-max))))
+
 ;;; Headings
 
 (ert-deftest cljbang-org-test-headings-count ()
@@ -350,34 +379,276 @@ gives every runnable step of the file in order."
 
 ;;; Effects
 
-(ert-deftest cljbang-org-test-cut-subtree-buffer-only-then-save ()
+(ert-deftest cljbang-org-test-revert-discards ()
   (cljbang-org-test--with-temp-fixture file "server.org"
-    ;; cut edits the buffer, not the disk
+    (cljbang-org-test--eval
+     "(cljbang.org/set-todo! %S \"State checks\" \"DONE\")" file)
+    (should (equal "DONE"
+                   (cljbang-get (cljbang-org-test--heading file "State checks")
+                                :todo)))
+    (cljbang-org-test--eval "(cljbang.org/revert! %S)" file)
+    (should (equal "TODO"
+                   (cljbang-get (cljbang-org-test--heading file "State checks")
+                                :todo)))))
+
+;;; Effects: setting a heading's fields
+
+(ert-deftest cljbang-org-test-set-todo ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
     (should (= 1 (cljbang-org-test--eval
-                  "(cljbang.org/cut-subtree! %S \"aly-odoo-16-demo.container\")"
-                  file)))
+                  "(cljbang.org/set-todo! %S \"File taxes\" \"DONE\")" file)))
+    (should (equal "DONE"
+                   (cljbang-get (cljbang-org-test--heading file "File taxes")
+                                :todo)))))
+
+(ert-deftest cljbang-org-test-set-todo-clears ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (cljbang-org-test--eval "(cljbang.org/set-todo! %S \"File taxes\" nil)" file)
+    (should (null (cljbang-get (cljbang-org-test--heading file "File taxes")
+                               :todo)))))
+
+(ert-deftest cljbang-org-test-set-todo-repeater-rolls-forward ()
+  "Marking a repeating task DONE goes through `org-todo', so org's own
+semantics apply: the stamp moves on, LAST_REPEAT goes in, and the state
+comes back to TODO.  Rewriting the headline would have left DONE."
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (cljbang-org-test--eval
+     "(cljbang.org/set-todo! %S \"Water the plants\" \"DONE\")" file)
+    (let ((h (cljbang-org-test--heading file "Water the plants")))
+      (should (equal "TODO" (cljbang-get h :todo)))
+      (should-not (equal "<2026-08-01 Sat +1w>" (cljbang-get h :scheduled)))
+      (should (string-match-p "+1w" (cljbang-get h :scheduled)))
+      (should (cljbang-get (cljbang-get h :properties) :LAST_REPEAT)))))
+
+(ert-deftest cljbang-org-test-set-todo-rejects-unknown-state ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (should-error (cljbang-org-test--eval
+                   "(cljbang.org/set-todo! %S \"File taxes\" \"BOGUS\")" file))))
+
+(ert-deftest cljbang-org-test-schedule-and-remove ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (cljbang-org-test--eval
+     "(cljbang.org/schedule! %S \"File taxes\" \"<2026-09-10 Thu>\")" file)
+    (should (equal "<2026-09-10 Thu>"
+                   (cljbang-get (cljbang-org-test--heading file "File taxes")
+                                :scheduled)))
+    (cljbang-org-test--eval
+     "(cljbang.org/schedule! %S \"File taxes\" nil)" file)
+    (should (null (cljbang-get (cljbang-org-test--heading file "File taxes")
+                               :scheduled)))))
+
+(ert-deftest cljbang-org-test-schedule-keeps-repeater ()
+  "A new date without a repeater leaves the old one, as `org-schedule' does."
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (cljbang-org-test--eval
+     "(cljbang.org/schedule! %S \"Water the plants\" \"2026-09-10\")" file)
+    (should (equal "<2026-09-10 Thu +1w>"
+                   (cljbang-get (cljbang-org-test--heading file "Water the plants")
+                                :scheduled)))))
+
+(ert-deftest cljbang-org-test-deadline-and-remove ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (cljbang-org-test--eval
+     "(cljbang.org/deadline! %S \"Water the plants\" \"<2026-09-10 Thu>\")" file)
+    (should (equal "<2026-09-10 Thu>"
+                   (cljbang-get (cljbang-org-test--heading file "Water the plants")
+                                :deadline)))
+    (cljbang-org-test--eval
+     "(cljbang.org/deadline! %S \"Water the plants\" nil)" file)
+    (should (null (cljbang-get (cljbang-org-test--heading file "Water the plants")
+                               :deadline)))))
+
+(ert-deftest cljbang-org-test-set-property-round-trips-case ()
+  "A lower-case key names the property a query returns upper-case."
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (cljbang-org-test--eval
+     "(cljbang.org/set-property! %S \"Water the plants\" :owner \"kyle\")" file)
+    (should (equal "kyle"
+                   (cljbang-get (cljbang-get (cljbang-org-test--heading
+                                              file "Water the plants")
+                                             :properties)
+                                :OWNER)))))
+
+(ert-deftest cljbang-org-test-set-property-removes-on-nil ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (cljbang-org-test--eval
+     "(cljbang.org/set-property! %S \"File taxes\" :OWNER nil)" file)
+    (should (null (cljbang-get (cljbang-get (cljbang-org-test--heading
+                                             file "File taxes")
+                                            :properties)
+                               :OWNER)))))
+
+(ert-deftest cljbang-org-test-set-tags-conj-round-trip ()
+  "Tags replace, so adding one is `conj' on the set a query returned."
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (should (equal ["archive" "urgent"]
+                   (cljbang-org-test--eval
+                    "(let [h (->> (cljbang.org/headings %S)
+                                  (filter #(= \"Old receipt\" (:title %%)))
+                                  first)]
+                       (cljbang.org/set-tags! %S h (conj (:tags h) \"urgent\"))
+                       (->> (cljbang.org/headings %S)
+                            (filter #(= \"Old receipt\" (:title %%)))
+                            first :tags vec sort vec))"
+                    file file file)))))
+
+(ert-deftest cljbang-org-test-set-tags-nil-removes ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (cljbang-org-test--eval
+     "(cljbang.org/set-tags! %S \"Old receipt\" nil)" file)
+    (should (= 0 (cljbang-count
+                  (cljbang-get (cljbang-org-test--heading file "Old receipt")
+                               :tags))))))
+
+(ert-deftest cljbang-org-test-set-priority ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (cljbang-org-test--eval
+     "(cljbang.org/set-priority! %S \"File taxes\" \"A\")" file)
+    (should (equal "A" (cljbang-get (cljbang-org-test--heading file "File taxes")
+                                    :priority)))
+    (cljbang-org-test--eval
+     "(cljbang.org/set-priority! %S \"File taxes\" nil)" file)
+    (should (null (cljbang-get (cljbang-org-test--heading file "File taxes")
+                               :priority)))))
+
+(ert-deftest cljbang-org-test-set-priority-remove-when-absent ()
+  "`org-priority' makes this an error; a script saying what it wants the
+heading to look like should not have to check first."
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (should (= 1 (cljbang-org-test--eval
+                  "(cljbang.org/set-priority! %S \"Water the plants\" nil)"
+                  file)))))
+
+(ert-deftest cljbang-org-test-setter-edits-every-match ()
+  (cljbang-org-test--with-temp-fixture file "repeated.org"
+    (should (= 2 (cljbang-org-test--eval
+                  "(cljbang.org/set-tags! %S \"Quadlets\" #{\"done\"})" file)))
+    (should (equal ["done" "done"]
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/headings %S)
+                          (filter #(= \"Quadlets\" (:title %%)))
+                          (mapcat #(vec (:tags %%)))
+                          vec)"
+                    file)))))
+
+(ert-deftest cljbang-org-test-setter-no-match-is-zero ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (should (= 0 (cljbang-org-test--eval
+                  "(cljbang.org/set-todo! %S \"Nothing here\" \"DONE\")" file)))))
+
+(ert-deftest cljbang-org-test-setter-is-buffer-only-until-save ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (cljbang-org-test--eval
+     "(cljbang.org/set-todo! %S \"File taxes\" \"DONE\")" file)
     (with-temp-buffer
       (insert-file-contents file)
-      (should (search-forward "aly-odoo-16-demo.container" nil t)))
-    ;; save persists; the heading is gone from disk and from a re-query
+      (should (search-forward "TODO [#B] File taxes" nil t)))
     (cljbang-org-test--eval "(cljbang.org/save! %S)" file)
     (with-temp-buffer
       (insert-file-contents file)
-      (should-not (search-forward "aly-odoo-16-demo.container" nil t)))
-    (should (null (cljbang-org-test--heading file "aly-odoo-16-demo.container")))
-    ;; idempotent: nothing left to cut
-    (should (= 0 (cljbang-org-test--eval
-                  "(cljbang.org/cut-subtree! %S \"aly-odoo-16-demo.container\")"
-                  file)))))
+      (should (search-forward "DONE [#B] File taxes" nil t)))))
 
-(ert-deftest cljbang-org-test-revert-discards ()
-  (cljbang-org-test--with-temp-fixture file "server.org"
-    (cljbang-org-test--eval "(cljbang.org/cut-subtree! %S \"Demo\")" file)
-    (should (null (cljbang-org-test--heading file "Demo")))
-    (cljbang-org-test--eval "(cljbang.org/revert! %S)" file)
-    (should (equal "Demo"
-                   (cljbang-get (cljbang-org-test--heading file "Demo")
-                                :title)))))
+;;; Effects: writing a heading
+
+(ert-deftest cljbang-org-test-insert-heading-at-end-of-file ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (should (= 1 (cljbang-org-test--eval
+                  "(cljbang.org/insert-heading! %S {:title \"Later\"})" file)))
+    (let ((h (cljbang-org-test--heading file "Later")))
+      (should (= 1 (cljbang-get h :level))))
+    (should (string-suffix-p "* Later\n" (cljbang-org-test--text file)))))
+
+(ert-deftest cljbang-org-test-insert-heading-under-selector ()
+  "The new heading is the last child of the parent, one level below it,
+and every field goes in through org's own command."
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (should (= 1 (cljbang-org-test--eval
+                  "(cljbang.org/insert-heading!
+                     %S
+                     {:title \"Ship it\" :todo \"TODO\" :priority \"A\"
+                      :tags #{\"work\"} :scheduled \"<2026-09-10 Thu>\"
+                      :properties {:owner \"kyle\"} :body \"Do the thing.\"}
+                     {:under \"Inbox\"})"
+                  file)))
+    (let ((h (cljbang-org-test--heading file "Ship it")))
+      (should (= 2 (cljbang-get h :level)))
+      (should (equal "TODO" (cljbang-get h :todo)))
+      (should (equal "A" (cljbang-get h :priority)))
+      (should (equal "<2026-09-10 Thu>" (cljbang-get h :scheduled)))
+      (should (cljbang-get (cljbang-get h :tags) "work"))
+      (should (equal "kyle" (cljbang-get (cljbang-get h :properties) :OWNER))))
+    ;; a last child, so it lands before the next level-1 heading
+    (let ((text (cljbang-org-test--text file)))
+      (should (< (string-search "Ship it" text)
+                 (string-search "* Done" text))))))
+
+(ert-deftest cljbang-org-test-insert-heading-needs-a-title ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (should-error (cljbang-org-test--eval
+                   "(cljbang.org/insert-heading! %S {:todo \"TODO\"})" file))))
+
+(ert-deftest cljbang-org-test-insert-heading-skips-computed-category ()
+  "A heading map carries :CATEGORY whether the file wrote one or not, so
+re-inserting a queried heading must not put it in the drawer."
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (cljbang-org-test--eval
+     "(cljbang.org/insert-heading!
+        %S (->> (cljbang.org/headings %S)
+                (filter #(= \"File taxes\" (:title %%)))
+                first
+                (#(assoc (assoc %% :title \"Copy\") :level 1))))"
+     file file)
+    (should (cljbang-org-test--heading file "Copy"))
+    (should-not (string-match-p ":CATEGORY:" (cljbang-org-test--text file)))))
+
+;;; Effects: refile
+
+(ert-deftest cljbang-org-test-refile-within-one-file ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (should (= 1 (cljbang-org-test--eval
+                  "(cljbang.org/refile! %S \"Old receipt\" {:under \"Done\"})"
+                  file)))
+    (let ((h (cljbang-org-test--heading file "Old receipt")))
+      (should (= 2 (cljbang-get h :level))))
+    (should (string-match-p "\\* Done\n\\*\\* DONE Old receipt"
+                            (cljbang-org-test--text file)))))
+
+(ert-deftest cljbang-org-test-refile-across-files ()
+  (cljbang-org-test--with-temp-fixtures ((file "tasks.org")
+                                         (archive "archive.org"))
+    (should (= 1 (cljbang-org-test--eval
+                  "(cljbang.org/refile! %S \"Old receipt\"
+                                        {:file %S :under \"2026\"})"
+                  file archive)))
+    (should (null (cljbang-org-test--heading file "Old receipt")))
+    (let ((h (cljbang-org-test--heading archive "Old receipt")))
+      (should (= 2 (cljbang-get h :level)))
+      (should (equal "DONE" (cljbang-get h :todo))))
+    ;; each buffer is modified and neither is saved
+    (with-temp-buffer
+      (insert-file-contents archive)
+      (should-not (search-forward "Old receipt" nil t)))))
+
+(ert-deftest cljbang-org-test-refile-to-file-end-without-under ()
+  (cljbang-org-test--with-temp-fixtures ((file "tasks.org")
+                                         (archive "archive.org"))
+    (cljbang-org-test--eval
+     "(cljbang.org/refile! %S \"Old receipt\" {:file %S})" file archive)
+    (should (= 1 (cljbang-get (cljbang-org-test--heading archive "Old receipt")
+                              :level)))))
+
+(ert-deftest cljbang-org-test-refile-refuses-target-inside-subtree ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (should-error (cljbang-org-test--eval
+                   "(cljbang.org/refile! %S \"Inbox\"
+                                         {:under \"Water the plants\"})"
+                   file))))
+
+(ert-deftest cljbang-org-test-refile-unknown-target-errors ()
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (should-error (cljbang-org-test--eval
+                   "(cljbang.org/refile! %S \"Old receipt\" {:under \"Nowhere\"})"
+                   file))))
 
 ;;; Executing a block
 

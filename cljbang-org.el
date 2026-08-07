@@ -32,6 +32,12 @@
 ;; :tags, no :todo, no regexps): filtering is Clojure's job over the
 ;; data `headings' returns, or org-ql's job via cljbang.org.ql.
 ;;
+;; A setter reaches org through org's own command for the field --
+;; org-todo, org-schedule, org-set-tags -- never through the headline
+;; text, so a repeating task re-schedules itself and a state change
+;; reaches the logbook.  Anything taking a selector edits every heading
+;; that matches and answers how many; no match is 0, not an error.
+;;
 ;; Transclusion expansion (:expand-transclusions? in query opts) is
 ;; scoped: expanded for the duration of the query, removed again, the
 ;; buffer left as found.  Effects refuse to run while it is active.
@@ -601,22 +607,384 @@ order; {:expand-transclusions? true} scans transcluded content too."
   (when cljbang-org--transcluded
     (error "cljbang-org: refusing to edit while transclusions are expanded")))
 
-;;;###autoload
-(defun cljbang-org-cut-subtree! (file selector)
-  "Cut every subtree in FILE matching SELECTOR; the count cut.
-Edits the visiting buffer only: `cljbang-org-save!' persists,
-`cljbang-org-revert!' discards.  Each cut re-locates from the top, so
-positions never go stale."
+;;; Effects: setting a heading's fields
+
+;; Every setter goes through org's own command for the field -- `org-todo',
+;; `org-schedule', `org-set-tags', `org-priority', `org-entry-put' -- rather
+;; than rewriting the headline itself.  That is the whole point of these
+;; being here: marking a repeating task DONE re-schedules it and moves it
+;; back to TODO, a DONE gets its CLOSED stamp, a state change reaches the
+;; logbook, and tags land aligned.  A regexp over the headline gets none of
+;; that right, and every caller would get it wrong differently.
+;;
+;; A setter takes the same selector the rest of the API does, so it edits
+;; *every* matching heading and answers how many it touched; no match is 0,
+;; not an error.
+
+(defun cljbang-org--edit-selected (file selector fn)
+  "Call FN with point on each heading in FILE matching SELECTOR; the count.
+The headings are found once, before the first edit, and held as markers,
+so an edit that lengthens the buffer does not move the ones still to
+visit.  Re-locating from the top before each edit would not work: a
+setter leaves its heading in place and still matching SELECTOR, so the
+search would return the same one forever."
   (cljbang-org--with-file file
     (cljbang-org--check-editable)
-    (let ((pred (cljbang-org--selector-pred selector))
-          (count 0)
-          pos)
-      (while (setq pos (cljbang-org--locate-first pred))
-        (goto-char pos)
-        (org-cut-subtree)
-        (setq count (1+ count)))
-      count)))
+    (let ((markers (mapcar #'copy-marker
+                           (cljbang-org--locate-all
+                            (cljbang-org--selector-pred selector)))))
+      (unwind-protect
+          (progn
+            (dolist (m markers)
+              (goto-char m)
+              (funcall fn))
+            (length markers))
+        (dolist (m markers) (set-marker m nil))))))
+
+(defun cljbang-org--field-name (x)
+  "X, a keyword, symbol or string, as a plain string, or nil."
+  (cond ((null x) nil)
+        ((stringp x) x)
+        ((symbolp x) (cljbang-name x))
+        (t (format "%s" x))))
+
+(defun cljbang-org--log-without-note (log)
+  "LOG, one of org's logging settings, with note-taking made a timestamp.
+A note opens a buffer and waits for prose.  Nothing is going to type it:
+these run from a script, and org would leave the note pending on
+`post-command-hook' for whoever touches the buffer next."
+  (if (eq log 'note) 'time log))
+
+(defun cljbang-org--todo-at-point (state)
+  "Set the TODO state of the heading at point to STATE, or clear it."
+  (let ((org-inhibit-logging 'note))
+    (org-todo (or (cljbang-org--field-name state) 'none))))
+
+(defun cljbang-org--plan-at-point (type time)
+  "Set TYPE, `scheduled' or `deadline', of the heading at point to TIME.
+A nil TIME removes the planning entry."
+  (let ((org-log-reschedule (cljbang-org--log-without-note org-log-reschedule))
+        (org-log-redeadline (cljbang-org--log-without-note org-log-redeadline))
+        (set (if (eq type 'deadline) #'org-deadline #'org-schedule)))
+    (if time
+        (funcall set nil time)
+      (funcall set '(4)))))
+
+(defun cljbang-org--priority-value (priority)
+  "PRIORITY as `org-priority' takes it, or nil to remove the cookie.
+A string or keyword gives its first character upcased, so \"a\", \"A\"
+and :A all name one cookie; an integer passes through, for a file whose
+priorities are numeric."
+  (cond ((null priority) nil)
+        ((integerp priority) priority)
+        (t (let ((s (cljbang-org--field-name priority)))
+             (if (string-empty-p s)
+                 (error "cljbang-org: empty priority")
+               (upcase (aref s 0)))))))
+
+(defun cljbang-org--priority-at-point (value)
+  "Set the priority cookie of the heading at point to VALUE, or remove it.
+Removing a cookie that is not there is not an error here, though
+`org-priority' makes it one: a script setting a field to nil is saying
+what it wants the heading to look like, not asserting what it looks like
+now."
+  (if value
+      (org-priority value)
+    (when (nth 3 (org-heading-components))
+      (org-priority 'remove))))
+
+(defun cljbang-org--property-name (key)
+  "KEY as a property name: its name, upcased.
+Org reads property names case-insensitively and `cljbang-org-headings'
+returns them upcased, so :owner and :OWNER have to name one property or
+what a query returns could not be written back."
+  (upcase (or (cljbang-org--field-name key)
+              (error "cljbang-org: a property needs a name"))))
+
+(defun cljbang-org--property-at-point (name value)
+  "Set property NAME on the heading at point to VALUE, or remove it."
+  (if (null value)
+      (org-entry-delete nil name)
+    (org-entry-put nil name (if (stringp value) value (format "%s" value)))))
+
+(defun cljbang-org--tag-list (tags)
+  "TAGS as `org-set-tags' takes them: a list of strings, or nil, or a string.
+A set -- the shape `cljbang-org-headings' returns under :tags -- has no
+order of its own, so it sorts, and the same set always writes the same
+line."
+  (cond ((null tags) nil)
+        ((stringp tags) tags)
+        ((cljbang--set-p tags)
+         (sort (mapcar #'cljbang-org--field-name
+                       (hash-table-keys (cljbang--set-table tags)))
+               #'string<))
+        ((sequencep tags)
+         (mapcar #'cljbang-org--field-name (append tags nil)))
+        (t (error "cljbang-org: bad tags %S" tags))))
+
+;;;###autoload
+(defun cljbang-org-set-todo! (file selector state)
+  "Set the TODO state of every heading in FILE matching SELECTOR; the count.
+STATE is a keyword of the file's own, as a string -- \"DONE\" -- or nil
+to leave the heading with no state at all.  A keyword the file does not
+declare is an error, which is `org-todo' talking and worth keeping.
+
+Marking a repeating task DONE does what org does: the SCHEDULED stamp
+rolls forward, LAST_REPEAT goes in, and the state comes back to TODO.
+Logging that would ask for a note is written as a timestamp instead.
+
+Edits the visiting buffer only; `cljbang-org-save!' persists."
+  (cljbang-org--edit-selected file selector
+                              (lambda () (cljbang-org--todo-at-point state))))
+
+;;;###autoload
+(defun cljbang-org-schedule! (file selector time)
+  "Set SCHEDULED on every heading in FILE matching SELECTOR; the count.
+TIME is anything `org-schedule' reads: a stamp \"<2026-09-10 Thu>\", a
+date \"2026-09-10\", one with a time of day, or a delta \"+2d\" from the
+stamp already there.  A repeater in TIME is kept; without one the old
+stamp's repeater carries over, so re-scheduling a weekly task leaves it
+weekly.  A nil TIME removes the SCHEDULED line.
+
+Edits the visiting buffer only; `cljbang-org-save!' persists."
+  (cljbang-org--edit-selected
+   file selector (lambda () (cljbang-org--plan-at-point 'scheduled time))))
+
+;;;###autoload
+(defun cljbang-org-deadline! (file selector time)
+  "Set DEADLINE on every heading in FILE matching SELECTOR; the count.
+TIME takes the same forms `cljbang-org-schedule!' describes, and nil
+removes the DEADLINE line.
+
+Edits the visiting buffer only; `cljbang-org-save!' persists."
+  (cljbang-org--edit-selected
+   file selector (lambda () (cljbang-org--plan-at-point 'deadline time))))
+
+;;;###autoload
+(defun cljbang-org-set-property! (file selector key value)
+  "Set property KEY to VALUE on every heading in FILE matching SELECTOR.
+The count.  KEY is a keyword, symbol or string and is upcased, the shape
+`cljbang-org-headings' returns properties in.  A nil VALUE removes the
+property; anything else that is not a string is printed.
+
+Edits the visiting buffer only; `cljbang-org-save!' persists."
+  (let ((name (cljbang-org--property-name key)))
+    (cljbang-org--edit-selected
+     file selector (lambda () (cljbang-org--property-at-point name value)))))
+
+;;;###autoload
+(defun cljbang-org-set-tags! (file selector tags)
+  "Set the tags of every heading in FILE matching SELECTOR; the count.
+TAGS is a set, a vector, a list, an org tag string, or nil for none.
+
+Tags replace, they do not merge, and there is no `add-tags!' to go with
+this: the :tags a query returns is a set, so adding and removing one is
+`conj' and `disj' before the call, where Clojure can see it.
+
+  (org/set-tags! f h (conj (:tags h) \"urgent\"))
+
+Edits the visiting buffer only; `cljbang-org-save!' persists."
+  (cljbang-org--edit-selected
+   file selector (lambda () (org-set-tags (cljbang-org--tag-list tags)))))
+
+;;;###autoload
+(defun cljbang-org-set-priority! (file selector priority)
+  "Set the priority of every heading in FILE matching SELECTOR; the count.
+PRIORITY is \"A\", :A, ?A or an integer where the file uses numeric
+priorities; nil removes the cookie, and removing one that is not there
+is not an error.
+
+Edits the visiting buffer only; `cljbang-org-save!' persists."
+  (let ((value (cljbang-org--priority-value priority)))
+    (cljbang-org--edit-selected
+     file selector (lambda () (cljbang-org--priority-at-point value)))))
+
+;;; Effects: writing a heading
+
+(defconst cljbang-org--computed-properties '("CATEGORY")
+  "Property names org computes, which a heading map carries regardless.
+Writing one back would put in the file something the file never said.")
+
+(defun cljbang-org--fill-heading-at-point (heading)
+  "Give the heading at point every field HEADING carries beyond its title.
+Order is org's own: the state, the cookie and the tags rewrite the
+headline, the planning line goes under it and the drawer under that.
+Property names sort, so the drawer does not depend on hash order."
+  (let ((todo (cljbang-get heading :todo))
+        (priority (cljbang-get heading :priority))
+        (tags (cljbang-get heading :tags))
+        (scheduled (cljbang-get heading :scheduled))
+        (deadline (cljbang-get heading :deadline))
+        (properties (cljbang-get heading :properties)))
+    (when todo (cljbang-org--todo-at-point todo))
+    (when priority
+      (cljbang-org--priority-at-point (cljbang-org--priority-value priority)))
+    (when tags (org-set-tags (cljbang-org--tag-list tags)))
+    (when scheduled (cljbang-org--plan-at-point 'scheduled scheduled))
+    (when deadline (cljbang-org--plan-at-point 'deadline deadline))
+    (when (hash-table-p properties)
+      (dolist (key (sort (hash-table-keys properties)
+                         (lambda (a b) (string< (format "%s" a) (format "%s" b)))))
+        (let ((name (cljbang-org--property-name key)))
+          (unless (member name cljbang-org--computed-properties)
+            (cljbang-org--property-at-point name (cljbang-get properties key))))))))
+
+(defun cljbang-org--blank-line-p ()
+  "Whether the line point is on is blank."
+  (save-excursion
+    (beginning-of-line)
+    (looking-at-p "[ \t]*$")))
+
+(defun cljbang-org--insert-heading-at-point (heading level)
+  "Insert HEADING at point as a heading of LEVEL, and fill in its fields.
+Blank lines go in front and behind unless they are already there, so
+what lands reads like the rest of the file rather than like generated
+text stapled to its neighbours."
+  (unless (bolp) (insert "\n"))
+  (unless (or (bobp)
+              (save-excursion (forward-line -1) (cljbang-org--blank-line-p)))
+    (insert "\n"))
+  (let ((beg (point))
+        (body (cljbang-get heading :body)))
+    (insert (make-string level ?*) " " (cljbang-get heading :title) "\n")
+    (when (org-string-nw-p body)
+      (insert (string-trim-right body) "\n"))
+    (unless (or (eobp) (cljbang-org--blank-line-p))
+      (save-excursion (insert "\n")))
+    (goto-char beg)
+    (cljbang-org--fill-heading-at-point heading)))
+
+(defun cljbang-org--child-point (pos level)
+  "Where a child of the heading at POS goes, and at what level.
+A cons of the position and the level: the end of that heading's subtree,
+one level below it unless LEVEL says otherwise."
+  (save-excursion
+    (goto-char pos)
+    (let ((parent (nth 0 (org-heading-components))))
+      (org-end-of-subtree t t)
+      (cons (point) (or level (1+ parent))))))
+
+;;;###autoload
+(defun cljbang-org-insert-heading! (file heading &optional opts)
+  "Insert HEADING into FILE; the number of headings inserted.
+HEADING is a map shaped like the ones `cljbang-org-headings' returns.
+Only :title is required; :level :todo :priority :tags :scheduled
+:deadline :properties and :body are used when present, each through
+org's own command for it, so what lands is what org would have written.
+
+OPTS: {:under selector} appends it as the last child of *every* matching
+heading, one level below the parent unless :level says otherwise;
+without it the heading goes at the end of the file, at its :level or at
+level 1.
+
+:CATEGORY is not written: org computes it, so a heading map carries one
+whether the file said so or not.
+
+  (org/insert-heading! f {:title \"Ship it\" :todo \"TODO\"
+                          :scheduled \"<2026-09-10 Thu>\"}
+                       {:under \"Sprint 4\"})
+
+Edits the visiting buffer only; `cljbang-org-save!' persists."
+  (cljbang-org--with-file file
+    (cljbang-org--check-editable)
+    (unless (org-string-nw-p (cljbang-get heading :title))
+      (error "cljbang-org: a heading needs a :title"))
+    (let ((level (cljbang-get heading :level))
+          (under (cljbang-org--opt opts :under)))
+      (if (not under)
+          (progn
+            (goto-char (point-max))
+            (cljbang-org--insert-heading-at-point heading (or level 1))
+            1)
+        (let ((markers (mapcar #'copy-marker
+                               (cljbang-org--locate-all
+                                (cljbang-org--selector-pred under)))))
+          (unwind-protect
+              (progn
+                (dolist (m markers)
+                  (let ((where (cljbang-org--child-point (marker-position m) level)))
+                    (goto-char (car where))
+                    (cljbang-org--insert-heading-at-point heading (cdr where))))
+                (length markers))
+            (dolist (m markers) (set-marker m nil))))))))
+
+(defun cljbang-org--refile-point (buffer under level)
+  "Where a refiled subtree goes in BUFFER, and at what level.
+A cons of a marker and the level.  UNDER selects the heading it becomes
+the last child of; without it the subtree goes at the end of BUFFER.
+A marker rather than a position because the caller finds this before it
+cuts, and the cut can be in this very buffer."
+  (with-current-buffer buffer
+    (org-with-wide-buffer
+     (let ((where
+            (if (not under)
+                (cons (point-max) (or level 1))
+              (cljbang-org--child-point
+               (or (cljbang-org--locate-first (cljbang-org--selector-pred under))
+                   (error "cljbang-org: no heading matching %S in %s"
+                          under (buffer-file-name)))
+               level))))
+       (cons (copy-marker (car where)) (cdr where))))))
+
+;;;###autoload
+(defun cljbang-org-refile! (file selector target)
+  "Move every subtree in FILE matching SELECTOR to TARGET; the count moved.
+TARGET is a map.  {:file \"archive.org\"} is the file it lands in, this
+one by default; {:under selector} is the heading it becomes the last
+child of -- the first match, since a subtree lands in one place -- and
+the end of that file by default; {:level n} overrides the level it is
+re-levelled to.
+
+Moving is the only way a subtree leaves where it is: there is no
+delete.  Archiving a heading is `refile!' to the file it belongs in,
+which is what org means by archiving anyway, and nothing here can
+silently lose text.
+
+Both files are left modified and neither is saved.  `cljbang-org-save!'
+takes one file, so a cross-file move needs it on each.
+
+  (doseq [h (ql/select f \\='(and (todo \"DONE\") (tags \"archive\")))]
+    (org/refile! f h {:file \"archive.org\" :under \"2026\"}))"
+  (cljbang-org--with-file file
+    (cljbang-org--check-editable)
+    (let* ((source (current-buffer))
+           (target-file (cljbang-org--opt target :file))
+           (dest (if target-file (cljbang-org--buffer target-file) source))
+           (under (cljbang-org--opt target :under))
+           (level (cljbang-org--opt target :level))
+           (markers (mapcar #'copy-marker
+                            (cljbang-org--locate-all
+                             (cljbang-org--selector-pred selector))))
+           (count 0))
+      (with-current-buffer dest (cljbang-org--check-editable))
+      (unwind-protect
+          (dolist (m markers count)
+            (goto-char m)
+            (org-back-to-heading t)
+            (let* ((beg (point))
+                   (end (save-excursion (org-end-of-subtree t t) (point)))
+                   (text (buffer-substring-no-properties beg end))
+                   ;; Found before the cut, and held as a marker across it:
+                   ;; when source and target are one buffer, removing the
+                   ;; subtree moves everything after it.
+                   (where (cljbang-org--refile-point dest under level))
+                   (at (car where)))
+              (when (and (eq dest source)
+                         (<= beg (marker-position at))
+                         (< (marker-position at) end))
+                (set-marker at nil)
+                (error "cljbang-org: refile target is inside the subtree being moved"))
+              (unwind-protect
+                  (progn
+                    (delete-region beg end)
+                    (with-current-buffer dest
+                      (org-with-wide-buffer
+                       (goto-char at)
+                       (unless (bolp) (insert "\n"))
+                       (org-paste-subtree (cdr where) text)))
+                    (setq count (1+ count)))
+                (set-marker at nil))))
+        (dolist (m markers) (set-marker m nil))))))
 
 ;;;###autoload
 (defun cljbang-org-save! (file)

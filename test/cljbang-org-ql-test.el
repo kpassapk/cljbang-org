@@ -79,9 +79,14 @@ heading map it returns is a selector cljbang.org's effects accept."
                    (cljbang-org-test--eval
                     "(->> (cljbang.org.ql/select
                             %S '(and (level 1) (tags \"project\")))
-                          (mapv #(cljbang.org/cut-subtree! %S %%)))"
+                          (mapv #(cljbang.org/set-property!
+                                   %S %% :reviewed \"yes\")))"
                     file file)))
-    (should (null (cljbang-org-test--heading file "Demo")))))
+    (should (equal "yes"
+                   (cljbang-get (cljbang-get (cljbang-org-test--heading
+                                              file "Demo")
+                                             :properties)
+                                :REVIEWED)))))
 
 (ert-deftest cljbang-org-ql-test-src-blocks-transcluded ()
   "The migration composite: ql match, narrow, expand, collect."

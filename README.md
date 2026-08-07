@@ -1,3 +1,5 @@
+![Status](https://img.shields.io/badge/status-alpha-blue)
+
 # cljbang-org
 
 Org mode as Clojure data for [cljbang.el][cljbang].
@@ -11,8 +13,7 @@ This library lets you query and edit org files with a more Clojure-friendly API.
 ## Why?
 
 [Org][org-syntax] is an excellent, widely-used, information-dense format. If
-you want to parse org files or make small edits from scripts (construct
-agendas, flip `TODO` states), you have a few options:
+you want to parse org files or make small edits from scripts (modify deadlines, flip `TODO` states), you have a few options:
 
 1. Use regular expressions and freeform text edits. This gets complicated quickly, and
    can produce invalid syntax.
@@ -24,15 +25,29 @@ agendas, flip `TODO` states), you have a few options:
    regular expressions internally, but at least you don't see them.
 
 This library takes the third approach, and provides a functional interface
-over the elisp API. This makes it easier to write Clojure over plain data extracted 
-from org buffers. Oh, and side-effectful functions always end in `!` for good measure.
+over the elisp API. This makes it easier to write scripts over plain data extracted 
+from org buffers. It also provides effectful functions, which always end in `!` for good measure.
 
 [org-syntax]: https://orgmode.org/worg/org-syntax.html
 
-## Example
+## The API
 
-Say `server.org` tangles some files, and pulls one more in from
-another file via transclusion:
+Snippets in the following sections use these namespaces:
+
+```
+(require '[cljbang.org :as org])
+(require '[cljbang.org.ql :as ql])
+```
+
+You can run this code in emacs using the `clj!` macro, or put it in a `.clj` file and use `cljbang-load-file`.
+
+See the [API Documentation][api] for more.
+
+[api]: ./doc/api.md
+
+## Querying org data
+
+Say `server.org` tangles some files, and pulls one more in from another file via transclusion:
 
 ```org
 * Quadlets
@@ -45,7 +60,7 @@ another file via transclusion:
 #+transclude: [[file:common.org::*Bar][Bar]]  ; provides bar.container
 ```
 
-Suppose we want to get a list of the files being tangled under "Quadlets", [transclusions](https://github.com/nobiot/org-transclusion) included, in raw elisp:
+To get a list of the files being tangled under "Quadlets", [transclusions](https://github.com/nobiot/org-transclusion) included, in raw elisp:
 
 ```elisp
 (let ((targets
@@ -66,7 +81,7 @@ Suppose we want to get a list of the files being tangled under "Quadlets", [tran
   (message "%s" (string-join (delete-dups targets) "\n")))
 ```
 
-Not the easiest API :)
+Not the easiest API :) (Granted, this is a contrived example to show just how bad it can get.)
 
 If you tried to use `cljbang` directly, things would not get much better. There is just too much mutation going on. 
 The result would look almost the same as the original elisp, but with some `el/` and `el!` thrown in.
@@ -74,9 +89,7 @@ The result would look almost the same as the original elisp, but with some `el/`
 `cljbang.org.ql` provides a `src-blocks` function that returns data structures, which makes this query easier to express:
 
 ```clj
-  (require '[cljbang.org.ql :as ql])
-
-  (->> (ql/src-blocks "servers/aly-2602-suite.org"
+  (->> (ql/src-blocks "file.org"
                       '(and (heading "Quadlets") (level 1))
                       {:expand-transclusions? true})
        (keep (comp :tangle :headers))
@@ -84,23 +97,51 @@ The result would look almost the same as the original elisp, but with some `el/`
        (map vector))
 ```
 
-This relies on an [org-ql](https://github.com/alphapapa/org-ql) query to select the "Quadlets" heading at level 1. Although org-ql provides the most powerful query interface, and we recommend using it, it's not a hard dependency. Neither is org-transclusion. 
+Nicer, right?
 
-Go ahead and check out the full [API](./doc/api.md), noticing how it's split between `org-ql` and plain `org` counterparts many most operations.
+This relies on an [org-ql][org-ql] query to select the "Quadlets" heading at level 1. Then it transforms the resulting (Clojure) map. If we wanted to operate on headings, instead of the source blocks which are under them, we would pass the org-ql query to `ql/select` instead:
 
-## Notes
+```
+(->> (ql/select "server.org"
+                '(and (heading "Quadlets") (level 1)))
+     (keep #(get-in %% [:properties :CUSTOM_ID]))
+     first)
+```
 
-- Queries return flat read-only maps.
+A lot of org operations on schedules, deadlines, TODOs etc. operate at the heading level. If you don't use org-ql, there is a simpler `org/headings` version:
 
-- Every effect function (the `!` names) takes a selector and searches for its
-  heading fresh, so stale positions cannot corrupt an edit.
+```
+(->> (org/headings "server.org")
+	 (filter #(= (:level %) 1))
+     (keep #(get-in %% [:properties :CUSTOM_ID]))
+     first)
+```
 
-- Effects modify the visiting buffer only. `save!` persists to disk; `revert!` discards buffer edits.
+[org-ql]: https://github.com/alphapapa/org-ql
 
-- Passing `{:expand-transclusions? true}` to a query expands transclusions for 
-  the duration of that query, removes them again, and leaves the buffer as found. 
-  Effects refuse to run while an expansion is active, because positions in expanded 
-  text do not belong to the file.
+The basic pattern is to start with some sort of selector, possibly obtained by an org-ql query, then do stuff.
+
+## Selectors and effects
+
+Effects are more tricky than queries, since they modify the underlying emacs buffer and make other things move around. Line-based editing is not super helpful when you can't see the buffer, like in a script.
+
+To mitigate this weirdness, at least partially, each effectful function takes a selector, and runs it right before performing an edit.
+
+## Roadmap
+
+These two are probably important:
+
+- timestamp parsing or conversion for deadlines and scheduled items
+- Accept multiple files, just like org and org-ql.
+
+  - Possibly accept a prebuilt `:agenda`?
+- Add heading keys: :closed, :effort, 
+- Support :id (right now only `:custom-id`)
+- Org construction
+- Add a navigator like `{:path ["Project" "Notes"]}` or `id` and separate cases where multiple matches are acceptable. 
+- "current buffer" concept. pass nil or provide a different arity
+- remove / redo "keywords" (regex-based at the moment)
+- 
 
 ## Installing
 
@@ -110,8 +151,6 @@ Go ahead and check out the full [API](./doc/api.md), noticing how it's split bet
   :vc (:url "https://github.com/kpassapk/cljbang-org"))
 ```
 
-The org-ql bridge lives in the same repository as a second package; it needs
-[org-ql][org-ql] installed:
 
 ```elisp
 (use-package cljbang-org-ql
@@ -119,3 +158,5 @@ The org-ql bridge lives in the same repository as a second package; it needs
   :vc (:url "https://github.com/kpassapk/cljbang-org"
        :main-file "cljbang-org-ql.el"))
 ```
+
+The latter needs [org-ql][org-ql] installed.
