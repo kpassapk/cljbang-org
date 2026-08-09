@@ -25,12 +25,13 @@
 ;; maps (:begin :end) are provenance, not handles: effect functions (the
 ;; ! names) take a selector and re-locate from scratch, so stale
 ;; positions cannot corrupt an edit.  Effects edit the visiting buffer;
-;; save! is the separate, explicit step that touches disk.
+;; `cljbang-org-save!' is the separate, explicit step that touches disk.
 ;;
 ;; A selector names a heading you already mean; it is a reference, not
 ;; a search.  Selectors deliberately do not grow query features (no
 ;; :tags, no :todo, no regexps): filtering is Clojure's job over the
-;; data `headings' returns, or org-ql's job via cljbang.org.ql.
+;; data `cljbang-org-headings' returns, or org-ql's job via
+;; cljbang.org.ql.
 ;;
 ;; A setter reaches org through org's own command for the field --
 ;; org-todo, org-schedule, org-set-tags -- never through the headline
@@ -189,7 +190,23 @@ there too when the query asked for it."
       (puthash :body (cljbang-org--body-at-point) heading))
     heading))
 
-;;; Selectors: how an effect names the heading it means
+;;; Selectors
+
+;; How an effect names the heading it means.  Anywhere a selector is
+;; expected, pass one of:
+;;
+;; - a title string, `"Quadlets"' -- the whole title, matched exactly
+;; - {:custom-id "quadlets"}, the heading's CUSTOM_ID property
+;; - {:title "Quadlets"}, the same as the string form
+;; - {:title "Quadlets" :level 1}, that title at that level and no other
+;; - a heading map a query returned: its CUSTOM_ID wins, else its title
+;;   and level
+;;
+;; A selector is a reference to a heading you already mean, not a
+;; search: there is no :tags, no :todo, no regexp, and there will not
+;; be.  Selecting on what a heading *is* rather than what it is called
+;; is a query, and a query is `cljbang-org-headings' filtered in
+;; Clojure, or an org-ql sexp through cljbang.org.ql.
 
 (defun cljbang-org--selector-pred (selector)
   "Predicate of no arguments, run with point at a heading, for SELECTOR.
@@ -235,157 +252,33 @@ language: it stays this small on purpose.  To search, filter the data
      (lambda () (when (funcall pred) (push (point) acc))))
     (nreverse acc)))
 
-;;; Coercion
-
-;;;###autoload
-(defun cljbang-org-tree (headings)
-  "HEADINGS nested by :level, as a vector of the root headings.
-Each map is a copy of the one handed in with a :children vector added,
-so the input is untouched and a leaf's :children is empty rather than
-missing.  Every heading map has a :level, so this nests whatever
-produced them:
-
-  (org/tree (org/headings \"box.org\"))
-  (org/tree (ql/select \"box.org\" \\='(todo \"TODO\")))
-
-A heading deeper than its predecessor by more than one level is still
-that heading's child; org files skip levels and the shape has to say
-something.  Headings that arrive out of file order nest by the order
-given, not by position."
-  (let (roots stack nodes)
-    (dolist (heading (append headings nil))
-      (let ((level (or (cljbang-get heading :level) 1))
-            (node (copy-hash-table heading)))
-        (push node nodes)
-        (puthash :children nil node)
-        (while (and stack (>= (caar stack) level)) (pop stack))
-        (if stack
-            (let ((parent (cdar stack)))
-              (puthash :children (cons node (cljbang-get parent :children)) parent))
-          (push node roots))
-        (push (cons level node) stack)))
-    (dolist (node nodes)
-      (puthash :children
-               (apply #'vector (nreverse (cljbang-get node :children)))
-               node))
-    (apply #'vector (nreverse roots))))
-
-(defun cljbang-org--lines (x)
-  "Lines of X as a list, flattening nested sequences."
-  (cond ((stringp x)
-         (let (acc)
-           (dolist (line (split-string x "\n"))
-             (let ((line (string-trim line)))
-               (unless (string-empty-p line) (push line acc))))
-           (nreverse acc)))
-        ((sequencep x)
-         (apply #'append (mapcar #'cljbang-org--lines (append x nil))))
-        (t (list (format "%s" x)))))
-
-;;;###autoload
-(defun cljbang-org-lines (x)
-  "X as a vector of non-blank, trimmed lines, whatever shape it arrived in.
-
-The same list of names reaches a block as text, as a vector of
-strings, or as a table -- a vector of one-element rows -- depending
-on how the block that produced it was run.  Org does not say which:
-a :var naming another block re-runs that block with :results none,
-which overrides the block's own :results, so a shell block that
-displays as text is handed over as a table.  Coerce and the caller
-stops caring.
-
-  (org/lines \"a\\nb\")          ;=> [\"a\" \"b\"]
-  (org/lines [\"a\" \"b\"])       ;=> [\"a\" \"b\"]
-  (org/lines [[\"a\"] [\"b\"]])   ;=> [\"a\" \"b\"]"
-  (apply #'vector (cljbang-org--lines x)))
-
-(defun cljbang-org--hline-p (row)
-  "Whether ROW is a horizontal rule rather than data.
-Org writes one `hline' when babel hands a table to a :var and :hline
-when `cljbang-org-tables' reads the same table; the caller of a
-coercion should not have to know which arrived."
-  (memq row '(hline :hline)))
-
-(defun cljbang-org--table-rows (x)
-  "Rows of X as a list, whatever shape X arrived in.
-X is a table map, its :rows, or the table a :var handed over."
-  (append (if (hash-table-p x) (cljbang-get x :rows) x) nil))
-
-(defun cljbang-org--cell (x)
-  "Cell X as a trimmed string; org tables have no types."
-  (if x (string-trim (format "%s" x)) ""))
-
-(defun cljbang-org--row (row)
-  (apply #'vector (mapcar #'cljbang-org--cell (append row nil))))
-
-;;;###autoload
-(defun cljbang-org-rows (x)
-  "X as a vector of data rows, each a vector of trimmed cell strings.
-Horizontal rules are dropped.  X is a table map from
-`cljbang-org-tables', its :rows, or the list a :var naming a table
-hands over.
-
-  (org/rows [[\"a\" \"b\"] :hline [\"1\" \"2\"]])  ;=> [[\"a\" \"b\"] [\"1\" \"2\"]]"
-  (apply #'vector
-         (delq nil
-               (mapcar (lambda (row)
-                         (unless (cljbang-org--hline-p row)
-                           (cljbang-org--row row)))
-                       (cljbang-org--table-rows x)))))
-
-(defun cljbang-org--header-key (cell i)
-  "Keyword naming column I (zero-based), whose header cell is CELL."
-  (let* ((s (downcase (cljbang-org--cell cell)))
-         (s (replace-regexp-in-string "[^[:alnum:]]+" "-" s))
-         (s (string-trim s "-+" "-+")))
-    (intern (concat ":" (if (string-empty-p s) (format "col-%d" (1+ i)) s)))))
-
-(defun cljbang-org--split-header (rows)
-  "Cons of the header row and the data rows of ROWS.
-The header is the row above the first horizontal rule, or the first row
-when there is none -- org's own :colnames rule.  Rules are dropped from
-the data either way."
-  (let ((rule (seq-position rows nil (lambda (row _) (cljbang-org--hline-p row)))))
-    (if (and rule (> rule 0))
-        (cons (nth (1- rule) rows)
-              (seq-remove #'cljbang-org--hline-p (nthcdr (1+ rule) rows)))
-      (let ((data (seq-remove #'cljbang-org--hline-p rows)))
-        (cons (car data) (cdr data))))))
-
-;;;###autoload
-(defun cljbang-org-table->maps (x)
-  "X as a vector of row maps keyed by the table's column names.
-X takes the same shapes `cljbang-org-rows' does.
-
-The header is the row above the first horizontal rule, or the first row
-when the table has none.  Keys are its cells as keywords, downcased with
-runs of non-alphanumerics collapsed to a single dash, so \"Host Name\"
-keys :host-name; an empty header cell keys :col-N by position, and a
-repeated one keeps the last column it names.  A row shorter than the
-header pads with empty strings, a longer one loses its extra cells.
-
-  (org/table->maps [[\"Host Name\"] :hline [\"caddy\"]])
-  ;=> [{:host-name \"caddy\"}]"
-  (let* ((split (cljbang-org--split-header (cljbang-org--table-rows x)))
-         (keys (seq-map-indexed (lambda (cell i) (cljbang-org--header-key cell i))
-                                (append (car split) nil))))
-    (apply #'vector
-           (mapcar (lambda (row)
-                     (let ((cells (append row nil))
-                           (h (make-hash-table :test #'equal)))
-                       (seq-do-indexed
-                        (lambda (key i) (puthash key (cljbang-org--cell (nth i cells)) h))
-                        keys)
-                       h))
-                   (cdr split)))))
-
 ;;; Queries
+
+;; A query opens the file, reads it, and hands back flat read-only
+;; maps: nothing it returns is a handle on the buffer, and nothing it
+;; does changes the file.
+;;
+;; Every query takes {:expand-transclusions? true}, which needs
+;; org-transclusion: the transclusions are expanded for the length of
+;; that one query, the content they pull in is scanned as if it were
+;; written in the file, and the expansion is removed again with the
+;; buffer's modified flag as it was found.  Effects refuse to run while
+;; an expansion is active, because positions in expanded text do not
+;; belong to the file.
 
 ;;;###autoload
 (defun cljbang-org-headings (file &optional opts)
   "All headings in FILE as a vector of heading maps.
-OPTS: {:body? true} adds each heading's own text as :body;
-{:expand-transclusions? true} to scan transcluded content too.
+A heading map holds :title :level :tags :todo :priority :scheduled
+:deadline :properties :begin :end :file, and :body when asked for.
+:scheduled and :deadline are the timestamp as the file writes it, or
+nil; :tags is a set; :properties is keyed by the upcased property
+name.
+
+OPTS: {:body? true} adds each heading's own text as :body -- its own
+prose, with the planning line, the drawers and anything belonging to a
+subheading left out; {:expand-transclusions? true} to scan transcluded
+content too.
 
 There is no :max-level, and no other filter: the vector is the whole
 outline, and narrowing it is Clojure's job.
@@ -400,12 +293,13 @@ outline, and narrowing it is Clojure's job.
            (lambda () (push (cljbang-org--heading-at-point) acc)))
           (apply #'vector (nreverse acc)))))))
 
-;;; Runnable blocks: what an :index counts
+;;; Runnable blocks and the index
 
-;; A src block and a `#+call:' line are both things `execute!' can run,
-;; so they share one numbering over the whole file.  That number, not a
-;; position, is the handle: a block that writes its results back moves
-;; every position after it, while the indices stay put.
+;; A src block and a `#+call:' line are both things
+;; `cljbang-org-execute!' can run, so they share one numbering over the
+;; whole file.  That number, not a position, is the handle: a block
+;; that writes its results back moves every position after it, while
+;; the indices stay put.
 
 (defun cljbang-org--call-begin (el)
   "Position of the `#+call:' line of babel-call element EL.
@@ -472,12 +366,17 @@ defaults included, so an untangled block carries :tangle \"no\"."
 ;;;###autoload
 (defun cljbang-org-src-blocks (file &optional opts)
   "Src blocks in FILE as a vector of block maps.
-OPTS: {:under selector} restricts to every matching subtree, in file
-order; {:expand-transclusions? true} scans transcluded content too.
+A block map holds :type :language :name :headers :body :index :begin
+:end :file.  :headers is the resolved header-arg map, defaults
+included, so an untangled block carries :tangle \"no\".
 
-An :index counts blocks in the file, not in the result, so it still
+OPTS: {:under selector} restricts to every matching subtree, in
+document order; {:expand-transclusions? true} scans transcluded content
+too.
+
+An :index counts blocks in the document, not in the result, so it still
 names the block under :under -- but not under
-:expand-transclusions?, where most blocks are not the file's to run."
+:expand-transclusions?, where most blocks are not this file's to run."
   (cljbang-org--scan file opts #'cljbang-org--collect-blocks))
 
 ;;; Call lines
@@ -508,11 +407,16 @@ e.g. \"deploy(HOST=web1)\"."
 ;;;###autoload
 (defun cljbang-org-call-blocks (file &optional opts)
   "The `#+call:' lines in FILE as a vector of call maps.
+A call map holds :type :name :call :arguments :value :index :begin :end
+:file.  :call names the block being invoked and :arguments the text
+inside its parens; :value is the call verbatim.
+
 Takes the same opts `cljbang-org-src-blocks' does.
 
 A call line invokes a block named elsewhere -- another heading, another
-file, the library of babel -- so `src-blocks' does not see it.  The two
-share one :index, and every runnable step in a file is:
+org file, the library of babel -- so `cljbang-org-src-blocks' does not
+see it.  The two share one :index, and every runnable step in the
+document is:
 
   (sort-by :index (concat (org/src-blocks f) (org/call-blocks f)))"
   (cljbang-org--scan file opts #'cljbang-org--collect-calls))
@@ -578,17 +482,40 @@ are not org data and are skipped."
 ;;;###autoload
 (defun cljbang-org-tables (file &optional opts)
   "Org tables in FILE as a vector of table maps.
-OPTS: {:under selector} restricts to every matching subtree, in file
-order; {:expand-transclusions? true} scans transcluded content too."
+A table map holds :name :rows :caption :formulas :begin :end :file.
+:rows is every row in document order, a vector of trimmed cell strings,
+with :hline for each horizontal rule -- lossless, so
+`cljbang-org-rows' and `cljbang-org-table->maps' take their input
+straight from it.  :formulas holds the `#+TBLFM:' lines verbatim.
+
+Pipes inside a src or example block are text, not a table, and
+`table.el' tables are skipped.
+
+OPTS: {:under selector} restricts to every matching subtree, in
+document order; {:expand-transclusions? true} scans transcluded content
+too."
   (cljbang-org--scan file opts #'cljbang-org--collect-tables))
 
 ;;; Effects
+
+;; An effect edits the buffer visiting the file and stops there.
+;; `cljbang-org-save!' is the separate step that writes the buffer to
+;; disk, and `cljbang-org-revert!' is the one that throws the edits
+;; away; nothing here saves on its own, so a script that goes wrong
+;; halfway leaves the file on disk untouched.
+;;
+;; Every effect that takes a selector searches for its heading afresh
+;; when it runs, so a position from an earlier query cannot corrupt an
+;; edit, and edits *every* heading that matches, answering how many it
+;; touched.  No match is 0, not an error.  Within one call the matches
+;; are found once and held as markers, so an edit that shifts the
+;; buffer does not move the headings still to visit.
 
 (defun cljbang-org--check-editable ()
   (when cljbang-org--transcluded
     (error "cljbang-org: refusing to edit while transclusions are expanded")))
 
-;;; Effects: setting a heading's fields
+;;; Effects: fields of a heading
 
 ;; Every setter goes through org's own command for the field -- `org-todo',
 ;; `org-schedule', `org-set-tags', `org-priority', `org-entry-put' -- rather
@@ -780,7 +707,12 @@ Edits the visiting buffer only; `cljbang-org-save!' persists."
     (cljbang-org--edit-selected
      file selector (lambda () (cljbang-org--priority-at-point value)))))
 
-;;; Effects: writing a heading
+;;; Effects: structure
+
+;; Writing a heading and moving one.  There is no delete: a subtree
+;; leaves where it is by being refiled somewhere else, which is what
+;; org means by archiving anyway, so no effect here can silently lose
+;; text.
 
 (defconst cljbang-org--computed-properties '("CATEGORY")
   "Property names org computes, which a heading map carries regardless.
@@ -917,7 +849,7 @@ the end of that file by default; {:level n} overrides the level it is
 re-levelled to.
 
 Moving is the only way a subtree leaves where it is: there is no
-delete.  Archiving a heading is `refile!' to the file it belongs in,
+delete.  Archiving a heading is a refile to the file it belongs in,
 which is what org means by archiving anyway, and nothing here can
 silently lose text.
 
@@ -966,6 +898,12 @@ takes one file, so a cross-file move needs it on each.
                     (setq count (1+ count)))
                 (set-marker at nil))))
         (dolist (m markers) (set-marker m nil))))))
+
+;;; Effects: the file
+
+;; The effects that take a file and no selector at all.
+;; `cljbang-org-save!' takes one file, so a refile that lands a subtree
+;; in another one needs saving on each.
 
 ;;;###autoload
 (defun cljbang-org-save! (file)
@@ -1110,6 +1048,156 @@ stderr with a zero exit is not a failure and does not raise.
       (let ((org-confirm-babel-evaluate nil))
         (cljbang-org--goto-runnable file selector)
         (cljbang-org--execute-at-point)))))
+
+;;; Shaping results
+
+;; Org is not fussy about the shape of what it hands over, and a caller
+;; that has to be is a caller writing the same three lines again.  A
+;; shaping function takes whatever arrived -- a map a query returned,
+;; the :rows inside it, or the value org-babel bound to a :var -- and
+;; answers one shape.
+
+;;;###autoload
+(defun cljbang-org-tree (headings)
+  "HEADINGS nested by :level, as a vector of the roots.
+Each map is a copy of the one handed in with a :children vector added,
+so the input is untouched and a leaf's :children is empty rather than
+missing.  Every heading map has a :level, so this nests whatever
+produced them:
+
+  (org/tree (org/headings \"box.org\"))
+  (org/tree (ql/select \"box.org\" \\='(todo \"TODO\")))
+
+A heading deeper than its predecessor by more than one level is still
+that heading's child; org files skip levels and the shape has to say
+something.  Headings that arrive out of file order nest by the order
+given, not by position."
+  (let (roots stack nodes)
+    (dolist (heading (append headings nil))
+      (let ((level (or (cljbang-get heading :level) 1))
+            (node (copy-hash-table heading)))
+        (push node nodes)
+        (puthash :children nil node)
+        (while (and stack (>= (caar stack) level)) (pop stack))
+        (if stack
+            (let ((parent (cdar stack)))
+              (puthash :children (cons node (cljbang-get parent :children)) parent))
+          (push node roots))
+        (push (cons level node) stack)))
+    (dolist (node nodes)
+      (puthash :children
+               (apply #'vector (nreverse (cljbang-get node :children)))
+               node))
+    (apply #'vector (nreverse roots))))
+
+(defun cljbang-org--lines (x)
+  "Lines of X as a list, flattening nested sequences."
+  (cond ((stringp x)
+         (let (acc)
+           (dolist (line (split-string x "\n"))
+             (let ((line (string-trim line)))
+               (unless (string-empty-p line) (push line acc))))
+           (nreverse acc)))
+        ((sequencep x)
+         (apply #'append (mapcar #'cljbang-org--lines (append x nil))))
+        (t (list (format "%s" x)))))
+
+;;;###autoload
+(defun cljbang-org-lines (x)
+  "X as a vector of non-blank, trimmed lines, whatever shape it arrived in.
+
+The same list of names reaches a block as text, as a vector of
+strings, or as a table -- a vector of one-element rows -- depending
+on how the block that produced it was run.  Org does not say which:
+a :var naming another block re-runs that block with :results none,
+which overrides the block's own :results, so a shell block that
+displays as text is handed over as a table.  Coerce and the caller
+stops caring.
+
+  (org/lines \"a\\nb\")          ;=> [\"a\" \"b\"]
+  (org/lines [\"a\" \"b\"])       ;=> [\"a\" \"b\"]
+  (org/lines [[\"a\"] [\"b\"]])   ;=> [\"a\" \"b\"]"
+  (apply #'vector (cljbang-org--lines x)))
+
+(defun cljbang-org--hline-p (row)
+  "Whether ROW is a horizontal rule rather than data.
+Org writes one `hline' when babel hands a table to a :var and :hline
+when `cljbang-org-tables' reads the same table; the caller of a
+coercion should not have to know which arrived."
+  (memq row '(hline :hline)))
+
+(defun cljbang-org--table-rows (x)
+  "Rows of X as a list, whatever shape X arrived in.
+X is a table map, its :rows, or the table a :var handed over."
+  (append (if (hash-table-p x) (cljbang-get x :rows) x) nil))
+
+(defun cljbang-org--cell (x)
+  "Cell X as a trimmed string; org tables have no types."
+  (if x (string-trim (format "%s" x)) ""))
+
+(defun cljbang-org--row (row)
+  (apply #'vector (mapcar #'cljbang-org--cell (append row nil))))
+
+;;;###autoload
+(defun cljbang-org-rows (x)
+  "X as a vector of data rows, each a vector of trimmed cell strings.
+Horizontal rules are dropped.  X is a table map from
+`cljbang-org-tables', its :rows, or the list a :var naming a table
+hands over.
+
+  (org/rows [[\"a\" \"b\"] :hline [\"1\" \"2\"]])  ;=> [[\"a\" \"b\"] [\"1\" \"2\"]]"
+  (apply #'vector
+         (delq nil
+               (mapcar (lambda (row)
+                         (unless (cljbang-org--hline-p row)
+                           (cljbang-org--row row)))
+                       (cljbang-org--table-rows x)))))
+
+(defun cljbang-org--header-key (cell i)
+  "Keyword naming column I (zero-based), whose header cell is CELL."
+  (let* ((s (downcase (cljbang-org--cell cell)))
+         (s (replace-regexp-in-string "[^[:alnum:]]+" "-" s))
+         (s (string-trim s "-+" "-+")))
+    (intern (concat ":" (if (string-empty-p s) (format "col-%d" (1+ i)) s)))))
+
+(defun cljbang-org--split-header (rows)
+  "Cons of the header row and the data rows of ROWS.
+The header is the row above the first horizontal rule, or the first row
+when there is none -- org's own :colnames rule.  Rules are dropped from
+the data either way."
+  (let ((rule (seq-position rows nil (lambda (row _) (cljbang-org--hline-p row)))))
+    (if (and rule (> rule 0))
+        (cons (nth (1- rule) rows)
+              (seq-remove #'cljbang-org--hline-p (nthcdr (1+ rule) rows)))
+      (let ((data (seq-remove #'cljbang-org--hline-p rows)))
+        (cons (car data) (cdr data))))))
+
+;;;###autoload
+(defun cljbang-org-table->maps (x)
+  "X as a vector of row maps keyed by the table's column names.
+X takes the same shapes `cljbang-org-rows' does.
+
+The header is the row above the first horizontal rule, or the first row
+when the table has none.  Keys are its cells as keywords, downcased with
+runs of non-alphanumerics collapsed to a single dash, so \"Host Name\"
+keys :host-name; an empty header cell keys :col-N by position, and a
+repeated one keeps the last column it names.  A row shorter than the
+header pads with empty strings, a longer one loses its extra cells.
+
+  (org/table->maps [[\"Host Name\"] :hline [\"caddy\"]])
+  ;=> [{:host-name \"caddy\"}]"
+  (let* ((split (cljbang-org--split-header (cljbang-org--table-rows x)))
+         (keys (seq-map-indexed (lambda (cell i) (cljbang-org--header-key cell i))
+                                (append (car split) nil))))
+    (apply #'vector
+           (mapcar (lambda (row)
+                     (let ((cells (append row nil))
+                           (h (make-hash-table :test #'equal)))
+                       (seq-do-indexed
+                        (lambda (key i) (puthash key (cljbang-org--cell (nth i cells)) h))
+                        keys)
+                       h))
+                   (cdr split)))))
 
 (provide 'cljbang-org)
 ;;; cljbang-org.el ends here

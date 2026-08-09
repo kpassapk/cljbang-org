@@ -41,9 +41,12 @@ Snippets in the following sections use these namespaces:
 
 You can run this code in emacs using the `clj!` macro, or put it in a `.clj` file and use `cljbang-load-file`.
 
-See the [API Documentation][api] for more.
+See the [API Documentation][api] for more, on [the site][site] or in the
+repository. It is generated from the docstrings by `make doc`, so it says what
+the code says.
 
-[api]: ./doc/api.md
+[api]: ./doc/API.md
+[site]: https://kpassapk.github.io/cljbang-org/
 
 ## Querying org data
 
@@ -78,10 +81,10 @@ To get a list of the files being tangled under "Quadlets", transclusions include
                                   (unless (member tangle '(nil "no"))
                                     (push tangle acc))))
                               (nreverse acc))))))))
-  (message "%s" (string-join (delete-dups targets) "\n")))
+  (delete-dups targets))
 ```
 
-Not the easiest API :) (Granted, this is a contrived example to show just how bad it can get.)
+Not the friendliest API :) (Granted, this is a contrived example to show just how bad it can get.)
 
 If you tried to use [cljbang][cljbang] directly, things would not get much better. There is just too much mutation going on. 
 The result would look almost the same as the original elisp, but with some `el/` and `el!` thrown in.
@@ -89,12 +92,11 @@ The result would look almost the same as the original elisp, but with some `el/`
 `cljbang.org.ql` provides a `src-blocks` function that returns data structures, which makes this query easier to express:
 
 ```clojure
-  (->> (ql/src-blocks "file.org"
-                      '(and (heading "Quadlets") (level 1))
-                      {:expand-transclusions? true})
-       (keep (comp :tangle :headers))
-       (remove #{"no"})
-       (map vector))
+(->> (ql/src-blocks "file.org"
+                    '(and (heading "Quadlets") (level 1))
+                    {:expand-transclusions? true})
+     (keep (comp :tangle :headers))
+     (remove #{"no"}))
 ```
 
 Nicer, right?
@@ -125,17 +127,20 @@ The basic pattern is to start with some sort of selector, possibly obtained by a
 
 Effects are more tricky than queries, since they modify the underlying emacs buffer and make other things move around. Line-based editing is not super helpful when you can't see the buffer, like in a script.
 
-To mitigate this weirdness, at least partially, each effectful function takes a selector, and runs it right before performing an edit. Here's a special little snippet you might run when you've finished all of today's tasks.
+To mitigate this weirdness, at least partially, each effectful function takes a selector and resolves it from scratch when it runs, so stale positions from an earlier query can't corrupt an edit. (Within one call the matches are found once
+and held as markers, so edits that shift the buffer don't move the headings still to visit.)
 
 ```clojure
 (->> (ql/select f '(and (todo "TODO") (deadline :to today)))
-     (map #(org/set-todo! f % "DONE")) ;; <- re-run here
+     (map #(org/set-todo! f % "DONE"))
      doall)
 ```
 
 Congratulations for finishing your TODOs!
 
 ## Shaping results
+
+I have found these utility functions most useful when using [ob-cljbang][ob-cljbang]. They may be useful in other contexts too.
 
 Org is not very picky about data shapes. In org-babel, a list of names
 reaches a block as text, as a vector of strings, or as a table — a vector of
@@ -166,39 +171,42 @@ Use `lines` to normalize:
 (org/tree (ql/select "box.org" '(todo "TODO")))
 ```
 
-I have found these utility functions most useful when using [ob-cljbang][ob-cljbang]. They may be useful in other contexts too.
-
 [ob-cljbang]: https://github.com/kpassapk/ob-cljbang
 
 See the [API Documentation][api] for more.
 
 ## Installing
 
+This package works with Emacs 28.1 or later.
+
 ```elisp
+(use-package cljbang
+  :ensure t
+  :vc (:url "https://github.com/borkdude/cljbang.el" :rev :newest))
+
 (use-package cljbang-org
   :ensure t
-  :vc (:url "https://github.com/kpassapk/cljbang-org"))
+  :vc (:url "https://github.com/kpassapk/cljbang-org" :rev :newest))
 ```
 
+To use `cljbang-org-ql`,
 
 ```elisp
-(use-package cljbang-org-ql
-  :ensure t
-  :vc (:url "https://github.com/kpassapk/cljbang-org"
-       :main-file "cljbang-org-ql.el"))
-```
+(use-package org-ql :ensure t)
 
-The latter needs [org-ql][org-ql] installed.
+(use-package cljbang-org-ql
+  :after (cljbang-org org-ql))
+```
 
 ## Target audience and goals
 
-This project is meant for the Clojure user who also uses emacs and org mode, and could merge those two worlds just a little bit better.
+This project is meant for the Clojure user who also uses emacs and org mode, and could merge those two (three?) worlds just a little bit better.
 
 It may also work for people who work extensively with org mode, and who are Clojure-curious.
 
 If you are an elisp expert, and routinely script org mode to your liking, this is probably not for you.
 
-Goals:
+**Goals**
 
 - Be maximalist about org mode. We have emacs. It's not about a "subset" of org.
   - Includes org-babel, exports, etc
@@ -221,7 +229,6 @@ The rest, in no particular order:
 - "current buffer" concept. pass nil or provide a different arity
 - file keywords (`#+TITLE:`, `#+TARGET:`), if they earn their place — via
   org-element, not a regex, so `#+name:` on a block stays the block's
-- generate API docs from comment blocks to avoid drift
 - :under re-parse whole buffer per match (not performant for large files)
 - if user is hand-editing a file and changes accumulate, what will happen? any way to guard against that?
   
