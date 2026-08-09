@@ -1,4 +1,4 @@
-;;; gendoc.el --- Generate doc/api.md from the sources -*- lexical-binding: t; -*-
+;;; gendoc.el --- Generate doc/API.md from the sources -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
