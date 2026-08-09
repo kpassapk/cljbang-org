@@ -36,7 +36,9 @@ ifeq ($(ELPA),$(VENDORED_ELPA))
 FETCH += $(ELPA_STAMP)
 endif
 
-.PHONY: test deps clean-deps
+.PHONY: test deps clean-deps doc doc-check site serve highlight-css clean-site
+
+SOURCES := cljbang-org.el cljbang-org-ql.el
 
 # org-ql and org-transclusion come from ELPA when present; their tests
 # skip-unless otherwise.
@@ -75,3 +77,36 @@ $(ELPA_STAMP):
 
 clean-deps:
 	rm -rf $(DEPS)
+
+# The API reference is the sources' own comments rearranged, so it is
+# generated rather than kept in step by hand.  `doc-check' is the CI
+# half of that: it fails when the file on disk no longer says what the
+# docstrings do.  Neither loads the package, so neither needs the deps.
+doc: doc/API.md
+
+doc/API.md: doc/gendoc.el $(SOURCES)
+	$(EMACS) -Q --batch -l doc/gendoc.el -f gendoc-write
+
+doc-check:
+	$(EMACS) -Q --batch -l doc/gendoc.el -f gendoc-check
+
+# The site is doc/ and README.md rendered by Hugo, which mounts them
+# where they stand -- nothing is copied into site/, so there is no
+# second copy to go stale.  HUGO_BASEURL matches what GitHub Pages
+# serves; `make serve' overrides it with localhost.
+HUGO ?= hugo
+HUGO_BASEURL ?= https://kpassapk.github.io/cljbang-org/
+
+site: doc
+	$(HUGO) --source site --baseURL $(HUGO_BASEURL) --minify
+
+serve: doc
+	$(HUGO) server --source site --buildDrafts
+
+# Committed rather than built: it changes only when Hugo's chroma
+# styles do, and building it needs nothing but hugo itself.
+highlight-css:
+	python3 site/gen-highlight-css.py
+
+clean-site:
+	rm -rf site/public site/resources

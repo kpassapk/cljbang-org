@@ -1,0 +1,52 @@
+# The site is the repository's own markdown, rendered.
+#
+# Nothing is copied in here: README.md and doc/ are mounted where they
+# stand, so the page github.com shows and the page the site shows are
+# one file.  doc/API.md is generated -- `make doc' -- from the elisp,
+# which is why neither carries front matter: a title block would show
+# up as a stray table on github.com, so the title comes from the file
+# name instead.
+
+baseURL = 'https://kpassapk.github.io/cljbang-org/'
+locale = 'en-us'
+title = 'cljbang-org'
+theme = 'hugo-book'
+enableGitInfo = true
+
+# A one-page reference wants its headings in the sidebar, and the
+# reference is the only page there is.
+disableKinds = ['taxonomy', 'term', 'RSS']
+
+[[module.mounts]]
+  source = '../README.md'
+  target = 'content/_index.md'
+
+# Mounted at content/doc rather than content/docs so that the README's
+# own link to ./doc/API.md is a link to the page here as well.
+[[module.mounts]]
+  source = '../doc'
+  target = 'content/doc'
+  files = ['*.md']
+
+[params]
+  BookTheme = 'auto'
+  BookToC = true
+  BookSection = 'doc'
+  BookRepo = 'https://github.com/kpassapk/cljbang-org'
+  BookSearch = true
+  # The README links to ./doc/API.md because that is the path on
+  # github.com; here the same link has to reach the rendered page.
+  # "error" rather than true, so a link that stops resolving fails the
+  # build instead of shipping broken.
+  BookPortableLinks = 'error'
+
+# Classes rather than inline colours: the page follows the reader's
+# light or dark, and one set of inline colours cannot.  The stylesheet
+# for both is assets/styles/custom.css, which hugo-book loads last --
+# `make highlight-css' writes it.
+[markup.highlight]
+  noClasses = false
+
+[markup.tableOfContents]
+  startLevel = 2
+  endLevel = 3
