@@ -17,11 +17,10 @@ namespace; there is nothing else to register.
 ```
 
 Queries return read-only snapshots: flat maps for headings, source
-blocks, call lines and tables, extracted at point with org's cheap
-APIs, never the raw org-element AST.  Positions in those
-maps (`:begin` `:end`) are provenance, not handles: effect functions (the
-! names) take a selector and re-locate from scratch, so stale
-positions cannot corrupt an edit.  Effects edit the visiting buffer;
+blocks, call lines, tables and the file's own keywords, extracted at
+point with org's APIs or org-element AST.
+
+Effects edit the visiting buffer;
 [`org/save!`](#orgsave) is the separate, explicit step that touches disk.
 
 A selector names a heading you already mean; it is a reference, not
@@ -163,6 +162,49 @@ Pipes inside a src or example block are text, not a table, and
 `opts`: `{:under selector}` restricts to every matching subtree, in
 document order; `{:expand-transclusions? true}` scans transcluded content
 too.
+
+## File keywords
+
+The `#+TITLE:` lines: org's in-buffer settings, and whatever else a
+file has taken to writing at the top.  They are read through
+org-element rather than a regexp over the `#+` lines, because
+`#+name:` and `#+caption:` look exactly the same and are not
+keywords at all: they are affiliated to the block or the table below
+them and belong to it.  org-element knows the difference, and a
+query already returns those as that block's `:name` and that table's
+`:caption`.
+
+### org/keywords
+
+`(org/keywords file & [opts])`
+
+The `#+KEYWORD:` lines of `file` as a map, keyed by upcased name.
+
+```clojure
+(:TITLE (org/keywords "server.org"))  ;=> "Test server"
+```
+
+A keyword the file writes more than once holds every value, in file
+order, one per line, which [`org/lines`](#orglines) splits apart:
+
+```clojure
+(org/lines (:TARGET (org/keywords "server.org")))
+;=> [".. (project)" "/ssh:app@example: (server)"]
+```
+
+Only the file's own keywords are here.  A `#+name:` or `#+caption:`
+line looks the same and is not one: it is affiliated to the block or
+the table below it, and a query returns it there, as that block's `:name`
+or that table's `:caption`.
+
+The whole file is read, not only the lines above the first heading.
+Org takes an in-buffer setting wherever it is written, so a `#+TITLE:`
+inside a subtree still titles the file, and leaving it out here would
+have the map say something the file does not.
+
+`opts`: `{:expand-transclusions? true}` to read transcluded content too.
+
+There is no `:under`: a keyword is the file's, not a subtree's.
 
 ## Effects
 
@@ -340,6 +382,39 @@ takes one file, so a cross-file move needs it on each.
 (doseq [h (ql/select f '(and (todo "DONE") (tags "archive")))]
   (org/refile! f h {:file "archive.org" :under "2026"}))
 ```
+
+## Effects: file keywords
+
+Writing a `#+KEYWORD:` line.  This is the one field org has no
+command of its own for — there is no `org-set-keyword` to go with
+`org-todo` and `org-set-tags` — so the line is written here, and
+located through org-element for the same reason the query reads it
+there: a `#+name:` belongs to the block below it, and a setter that
+matched on text would overwrite one.
+
+### org/set-keyword!
+
+`(org/set-keyword! file key value)`
+
+Set the `#+KEY:` lines of `file` to `value`; the number of lines written.
+`key` is a keyword, symbol or string and is upcased, the shape
+[`org/keywords`](#orgkeywords) returns.  `value` is a string, a vector or a list
+of them, or `nil` to remove the keyword; a value of several lines writes
+one `#+KEY:` line each, so what a query joined goes back as it came.
+
+The keyword replaces.  Every `#+KEY:` line in the file gives way to the
+new ones, written where the first of them was; a keyword the file does
+not have yet goes after the ones it opens with.  There is no
+`add-keyword!` to go with this: adding a value is `conj` on what the
+query returned, where Clojure can see it.
+
+```clojure
+(org/set-keyword! f :TARGET
+                  (conj (org/lines (:TARGET (org/keywords f)))
+                        "/ssh:web@example: (web)"))
+```
+
+Edits the visiting buffer only; [`org/save!`](#orgsave) persists.
 
 ## Effects: the file
 

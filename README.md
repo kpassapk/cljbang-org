@@ -138,6 +138,26 @@ and held as markers, so edits that shift the buffer don't move the headings stil
 
 Congratulations for finishing your TODOs!
 
+## File keywords
+
+`keywords` reads the `#+TITLE:`-style lines as a map, and `set-keyword!` writes
+them. Both go through org-element, so a `#+name:` or `#+caption:` line stays
+the block's or the table's — it only looks like a file keyword.
+
+```clojure
+(:TITLE (org/keywords "server.org"))
+;=> "Test server"
+
+(org/lines (:TARGET (org/keywords "server.org")))
+;=> [".. (project)" "/ssh:app@example: (server)"]
+
+(org/set-keyword! "server.org" :TARGET "/ssh:web@example: (web)")
+```
+
+A keyword written more than once holds its values one per line, which is why
+`lines` splits them; writing it back replaces every `#+TARGET:` line in the
+file with what you pass.
+
 ## Shaping results
 
 I have found these utility functions most useful when using [ob-cljbang][ob-cljbang]. They may be useful in other contexts too.
@@ -227,8 +247,6 @@ The rest, in no particular order:
 - Org construction
 - Add a navigator like `{:path ["Project" "Notes"]}` or `id` and separate cases where multiple matches are acceptable. 
 - "current buffer" concept. pass nil or provide a different arity
-- file keywords (`#+TITLE:`, `#+TARGET:`), if they earn their place — via
-  org-element, not a regex, so `#+name:` on a block stays the block's
 - :under re-parse whole buffer per match (not performant for large files)
 - if user is hand-editing a file and changes accumulate, what will happen? any way to guard against that?
   

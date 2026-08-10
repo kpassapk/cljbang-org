@@ -365,6 +365,47 @@ gives every runnable step of the file in order."
     (should (equal "1" (cljbang-get row :a)))
     (should (equal "" (cljbang-get row :col-2)))))
 
+;;; File keywords
+
+(ert-deftest cljbang-org-test-keywords ()
+  (should (equal "Test server"
+                 (cljbang-org-test--eval
+                  "(:TITLE (cljbang.org/keywords %S))"
+                  (cljbang-org-test--fixture "server.org")))))
+
+(ert-deftest cljbang-org-test-keywords-repeated ()
+  "A keyword the file writes twice keeps both values, one per line,
+which `cljbang-org-lines' splits apart again."
+  (should (equal [".. (project)" "/ssh:app@example: (server)"]
+                 (cljbang-org-test--eval
+                  "(cljbang.org/lines (:TARGET (cljbang.org/keywords %S)))"
+                  (cljbang-org-test--fixture "server.org")))))
+
+(ert-deftest cljbang-org-test-keywords-are-not-affiliated-lines ()
+  "`#+name:', `#+caption:' and `#+TBLFM:' look the same and belong to
+the block and the table below them, where a query already returns them."
+  (let ((file (cljbang-org-test--fixture "tables.org")))
+    (should (null (cljbang-org-test--eval
+                   "(:NAME (cljbang.org/keywords %S))" file)))
+    (should (null (cljbang-org-test--eval
+                   "(:CAPTION (cljbang.org/keywords %S))" file)))
+    (should (null (cljbang-org-test--eval
+                   "(:TBLFM (cljbang.org/keywords %S))" file)))
+    (should (equal "Where things run"
+                   (cljbang-org-test--eval
+                    "(:caption (first (cljbang.org/tables %S)))" file)))))
+
+(ert-deftest cljbang-org-test-keywords-inside-a-subtree ()
+  "Org takes an in-buffer setting wherever it is written, so the map
+says what the file says, not what its first lines say."
+  (cljbang-org-test--with-temp-fixture file "tasks.org"
+    (with-current-buffer (cljbang-org--buffer file)
+      (goto-char (point-max))
+      (insert "\n#+TARGET: late (x)\n"))
+    (should (equal "late (x)"
+                   (cljbang-org-test--eval
+                    "(:TARGET (cljbang.org/keywords %S))" file)))))
+
 ;;; Effects
 
 (ert-deftest cljbang-org-test-revert-discards ()
@@ -637,6 +678,64 @@ re-inserting a queried heading must not put it in the drawer."
     (should-error (cljbang-org-test--eval
                    "(cljbang.org/refile! %S \"Old receipt\" {:under \"Nowhere\"})"
                    file))))
+
+;;; Effects: file keywords
+
+(ert-deftest cljbang-org-test-set-keyword-replaces-every-line ()
+  "Two `#+TARGET:' lines give way to the one written where the first was."
+  (cljbang-org-test--with-temp-fixture file "server.org"
+    (should (= 1 (cljbang-org-test--eval
+                  "(cljbang.org/set-keyword! %S :target \"/ssh:web@example: (web)\")"
+                  file)))
+    (should (string-prefix-p
+             "#+TITLE: Test server\n#+TARGET: /ssh:web@example: (web)\n\n* Quadlets"
+             (cljbang-org-test--text file)))))
+
+(ert-deftest cljbang-org-test-set-keyword-conj-round-trip ()
+  "Keywords replace, so adding a value is `conj' on what the query
+returned -- and what it joined goes back as it came."
+  (cljbang-org-test--with-temp-fixture file "server.org"
+    (should (= 3 (cljbang-org-test--eval
+                  "(cljbang.org/set-keyword!
+                     %S :TARGET (conj (cljbang.org/lines
+                                        (:TARGET (cljbang.org/keywords %S)))
+                                      \"/ssh:web@example: (web)\"))"
+                  file file)))
+    (should (equal [".. (project)"
+                    "/ssh:app@example: (server)"
+                    "/ssh:web@example: (web)"]
+                   (cljbang-org-test--eval
+                    "(cljbang.org/lines (:TARGET (cljbang.org/keywords %S)))"
+                    file)))))
+
+(ert-deftest cljbang-org-test-set-keyword-nil-removes ()
+  (cljbang-org-test--with-temp-fixture file "server.org"
+    (should (= 0 (cljbang-org-test--eval
+                  "(cljbang.org/set-keyword! %S :TITLE nil)" file)))
+    (should (null (cljbang-org-test--eval
+                   "(:TITLE (cljbang.org/keywords %S))" file)))
+    (should (string-prefix-p "#+TARGET: .. (project)"
+                             (cljbang-org-test--text file)))))
+
+(ert-deftest cljbang-org-test-set-keyword-new-goes-after-the-ones-there ()
+  (cljbang-org-test--with-temp-fixture file "server.org"
+    (cljbang-org-test--eval "(cljbang.org/set-keyword! %S :author \"kyle\")" file)
+    (should (string-prefix-p
+             "#+TITLE: Test server\n#+TARGET: .. (project)\n\
+#+TARGET: /ssh:app@example: (server)\n#+AUTHOR: kyle\n\n* Quadlets"
+             (cljbang-org-test--text file)))))
+
+(ert-deftest cljbang-org-test-set-keyword-leaves-a-block-name-alone ()
+  "Why it goes through org-element: a `#+name:' on a block is the
+block's, however much it looks like a file keyword, and a setter
+matching on text would overwrite it."
+  (cljbang-org-test--with-temp-fixture file "server.org"
+    (cljbang-org-test--eval "(cljbang.org/set-keyword! %S :NAME \"top\")" file)
+    (should (equal ["untangled"]
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/src-blocks %S) (keep :name) vec)" file)))
+    (should (equal "top" (cljbang-org-test--eval
+                          "(:NAME (cljbang.org/keywords %S))" file)))))
 
 ;;; Executing a block
 
