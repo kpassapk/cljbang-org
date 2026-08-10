@@ -20,11 +20,10 @@
 ;;        (map :title))
 ;;
 ;; Queries return read-only snapshots: flat maps for headings, source
-;; blocks, call lines and tables, extracted at point with org's cheap
-;; APIs, never the raw org-element AST.  Positions in those
-;; maps (:begin :end) are provenance, not handles: effect functions (the
-;; ! names) take a selector and re-locate from scratch, so stale
-;; positions cannot corrupt an edit.  Effects edit the visiting buffer;
+;; blocks, call lines, tables and the file's own keywords, extracted at
+;; point with org's APIs or org-element AST.
+;;
+;; Effects edit the visiting buffer;
 ;; `cljbang-org-save!' is the separate, explicit step that touches disk.
 ;;
 ;; A selector names a heading you already mean; it is a reference, not
@@ -496,6 +495,63 @@ document order; {:expand-transclusions? true} scans transcluded content
 too."
   (cljbang-org--scan file opts #'cljbang-org--collect-tables))
 
+;;; File keywords
+
+;; The `#+TITLE:' lines: org's in-buffer settings, and whatever else a
+;; file has taken to writing at the top.  They are read through
+;; org-element rather than a regexp over the `#+' lines, because
+;; `#+name:' and `#+caption:' look exactly the same and are not
+;; keywords at all: they are affiliated to the block or the table below
+;; them and belong to it.  org-element knows the difference, and a
+;; query already returns those as that block's :name and that table's
+;; :caption.
+
+(defun cljbang-org--collect-keywords ()
+  "Keywords in the accessible portion as a map, keyed by upcased name.
+A name written more than once holds its values in file order, one per
+line: a keyword's value cannot contain a newline, so nothing is lost
+and `cljbang-org-lines' splits them apart again."
+  (let ((acc (make-hash-table :test #'equal)))
+    (dolist (el (org-element-map (org-element-parse-buffer 'element)
+                    'keyword #'identity))
+      (let ((key (intern (concat ":" (org-element-property :key el))))
+            (value (or (cljbang-org--str (org-element-property :value el)) "")))
+        (puthash key
+                 (let ((prev (gethash key acc)))
+                   (if prev (concat prev "\n" value) value))
+                 acc)))
+    acc))
+
+;;;###autoload
+(defun cljbang-org-keywords (file &optional opts)
+  "The `#+KEYWORD:' lines of FILE as a map, keyed by upcased name.
+
+  (:TITLE (org/keywords \"server.org\"))  ;=> \"Test server\"
+
+A keyword the file writes more than once holds every value, in file
+order, one per line, which `cljbang-org-lines' splits apart:
+
+  (org/lines (:TARGET (org/keywords \"server.org\")))
+  ;=> [\".. (project)\" \"/ssh:app@example: (server)\"]
+
+Only the file's own keywords are here.  A `#+name:' or `#+caption:'
+line looks the same and is not one: it is affiliated to the block or
+the table below it, and a query returns it there, as that block's :name
+or that table's :caption.
+
+The whole file is read, not only the lines above the first heading.
+Org takes an in-buffer setting wherever it is written, so a `#+TITLE:'
+inside a subtree still titles the file, and leaving it out here would
+have the map say something the file does not.
+
+OPTS: {:expand-transclusions? true} to read transcluded content too.
+
+There is no :under: a keyword is the file's, not a subtree's."
+  (cljbang-org--with-file file
+    (cljbang-org--with-transclusions
+        (cljbang-org--opt opts :expand-transclusions?)
+      (cljbang-org--collect-keywords))))
+
 ;;; Effects
 
 ;; An effect edits the buffer visiting the file and stops there.
@@ -898,6 +954,94 @@ takes one file, so a cross-file move needs it on each.
                     (setq count (1+ count)))
                 (set-marker at nil))))
         (dolist (m markers) (set-marker m nil))))))
+
+;;; Effects: file keywords
+
+;; Writing a `#+KEYWORD:' line.  This is the one field org has no
+;; command of its own for -- there is no `org-set-keyword' to go with
+;; `org-todo' and `org-set-tags' -- so the line is written here, and
+;; located through org-element for the same reason the query reads it
+;; there: a `#+name:' belongs to the block below it, and a setter that
+;; matched on text would overwrite one.
+
+(defun cljbang-org--keyword-name (key)
+  "KEY as the name of a file keyword: its name, upcased.
+org-element upcases the keys it parses and `cljbang-org-keywords'
+returns them that way, so :title and :TITLE have to name one keyword or
+what a query returns could not be written back."
+  (upcase (or (cljbang-org--field-name key)
+              (error "cljbang-org: a keyword needs a name"))))
+
+(defun cljbang-org--keyword-begins (name)
+  "Beginning of every `#+NAME:' line in the buffer, in file order."
+  (org-element-map (org-element-parse-buffer 'element) 'keyword
+    (lambda (el)
+      (and (equal name (org-element-property :key el))
+           (org-element-property :begin el)))))
+
+(defun cljbang-org--keyword-point ()
+  "Where a keyword the file does not have yet goes.
+After the run of keywords and comments the file opens with, which is
+where the ones it does have are, and before whatever it says next."
+  (let ((section (car (org-element-contents
+                       (org-element-parse-buffer 'element))))
+        (pos (point-min)))
+    (when (eq (org-element-type section) 'section)
+      (catch 'done
+        (dolist (el (org-element-contents section))
+          (unless (memq (org-element-type el) '(keyword comment))
+            (throw 'done nil))
+          ;; The element's own last line, not its :end, which has
+          ;; already crossed the blank lines that follow it.
+          (setq pos (save-excursion
+                      (goto-char (org-element-property :end el))
+                      (skip-chars-backward " \t\n")
+                      (line-beginning-position 2))))))
+    pos))
+
+;;;###autoload
+(defun cljbang-org-set-keyword! (file key value)
+  "Set the `#+KEY:' lines of FILE to VALUE; the number of lines written.
+KEY is a keyword, symbol or string and is upcased, the shape
+`cljbang-org-keywords' returns.  VALUE is a string, a vector or a list
+of them, or nil to remove the keyword; a value of several lines writes
+one `#+KEY:' line each, so what a query joined goes back as it came.
+
+The keyword replaces.  Every `#+KEY:' line in the file gives way to the
+new ones, written where the first of them was; a keyword the file does
+not have yet goes after the ones it opens with.  There is no
+`add-keyword!' to go with this: adding a value is `conj' on what the
+query returned, where Clojure can see it.
+
+  (org/set-keyword! f :TARGET
+                    (conj (org/lines (:TARGET (org/keywords f)))
+                          \"/ssh:web@example: (web)\"))
+
+Edits the visiting buffer only; `cljbang-org-save!' persists."
+  (let ((name (cljbang-org--keyword-name key))
+        (values (and value (cljbang-org--lines value))))
+    (cljbang-org--with-file file
+      (cljbang-org--check-editable)
+      (let ((markers (mapcar #'copy-marker (cljbang-org--keyword-begins name))))
+        (unwind-protect
+            ;; Found before the first line goes: a marker at the start of
+            ;; a deleted region stays where the region was, which is where
+            ;; the replacement belongs.
+            (let ((at (copy-marker (or (car markers)
+                                       (cljbang-org--keyword-point)))))
+              (unwind-protect
+                  (progn
+                    (dolist (m (reverse markers))
+                      (goto-char m)
+                      (delete-region (line-beginning-position)
+                                     (line-beginning-position 2)))
+                    (goto-char at)
+                    (unless (bolp) (insert "\n"))
+                    (dolist (value values)
+                      (insert "#+" name ": " value "\n"))
+                    (length values))
+                (set-marker at nil)))
+          (dolist (m markers) (set-marker m nil)))))))
 
 ;;; Effects: the file
 
