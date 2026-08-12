@@ -92,6 +92,20 @@ one query numbers against one state of the buffer.")
   "Value of KEY in OPTS, a cljbang map or nil."
   (and opts (cljbang-get opts key)))
 
+(defun cljbang-org--line-of (pos)
+  "Line number of POS, counted from the top of the file.
+Absolute, so a query narrowed to a subtree still answers with the
+line the file writes and not the line the narrowing starts at."
+  (line-number-at-pos pos t))
+
+(defun cljbang-org--last-line-of (begin end)
+  "Line number of the last line the region BEGIN..END covers.
+Inclusive, so it is one line before END's own whenever END is the
+position after the region -- what a heading's :end is, sitting on
+the next heading's line.  A caller reading the region back wants
+the line the last character is on, not the line after it."
+  (cljbang-org--line-of (max begin (1- end))))
+
 (defmacro cljbang-org--with-transclusions (expand &rest body)
   "Run BODY, with transclusions expanded in the current buffer when EXPAND.
 Read-only from the file's point of view: the expansion is removed again
@@ -166,11 +180,15 @@ not part of it."
 
 (defun cljbang-org--heading-at-point ()
   "Heading at point as a map: :title :level :tags :todo :priority
-:scheduled :deadline :properties :begin :end :file.  :scheduled and
-:deadline hold the timestamp as the file writes it, or nil.  :body is
-there too when the query asked for it."
+:scheduled :deadline :properties :begin :end :line-start :line-end
+:file.  :scheduled and :deadline hold the timestamp as the file writes
+it, or nil.  :begin and :end are positions and span the whole subtree;
+:line-start and :line-end are the same span in lines, inclusive.  :body
+is there too when the query asked for it."
   (let* ((comps (org-heading-components))
          (priority (nth 3 comps))
+         (begin (point))
+         (end (save-excursion (org-end-of-subtree t t) (point)))
          (heading
           (cljbang-hash-map
            :title (cljbang-org--title-at-point)
@@ -182,8 +200,10 @@ there too when the query asked for it."
            :scheduled (cljbang-org--str (org-entry-get nil "SCHEDULED"))
            :deadline (cljbang-org--str (org-entry-get nil "DEADLINE"))
            :properties (cljbang-org--properties-at-point)
-           :begin (point)
-           :end (save-excursion (org-end-of-subtree t t) (point))
+           :begin begin
+           :end end
+           :line-start (cljbang-org--line-of begin)
+           :line-end (cljbang-org--last-line-of begin end)
            :file (buffer-file-name))))
     (when cljbang-org--include-body
       (puthash :body (cljbang-org--body-at-point) heading))
@@ -269,10 +289,16 @@ language: it stays this small on purpose.  To search, filter the data
 (defun cljbang-org-headings (file &optional opts)
   "All headings in FILE as a vector of heading maps.
 A heading map holds :title :level :tags :todo :priority :scheduled
-:deadline :properties :begin :end :file, and :body when asked for.
-:scheduled and :deadline are the timestamp as the file writes it, or
-nil; :tags is a set; :properties is keyed by the upcased property
-name.
+:deadline :properties :begin :end :line-start :line-end :file, and
+:body when asked for.  :scheduled and :deadline are the timestamp as
+the file writes it, or nil; :tags is a set; :properties is keyed by the
+upcased property name.
+
+:begin and :end are buffer positions and :line-start and :line-end the
+same span in lines, inclusive at both ends.  Both cover the whole
+subtree, so a heading's span contains its children's: an outline read
+back a section at a time is `:line-start' to the next sibling's, and
+the lines a heading owns alone are its own down to its first child's.
 
 OPTS: {:body? true} adds each heading's own text as :body -- its own
 prose, with the planning line, the drawers and anything belonging to a
@@ -335,23 +361,29 @@ widened buffer, so an index does not depend on what a query narrowed to."
 
 (defun cljbang-org--block-at-point ()
   "Src block at point as a map: :type :language :name :headers :body
-:index :begin :end :file.  :headers is the resolved header-arg map,
-defaults included, so an untangled block carries :tangle \"no\"."
+:index :begin :end :line-start :line-end :file.  :headers is the
+resolved header-arg map, defaults included, so an untangled block
+carries :tangle \"no\".  The span runs from the `#+begin_src' line to
+the `#+end_src' line, as positions and again as inclusive lines."
   (let* ((info (org-babel-get-src-block-info 'light))
          (headers (let ((h (make-hash-table :test #'equal)))
                     (dolist (kv (nth 2 info) h)
-                      (puthash (car kv) (cdr kv) h)))))
+                      (puthash (car kv) (cdr kv) h))))
+         (begin (point))
+         (end (save-excursion
+                (re-search-forward "^[ \t]*#\\+end_src" nil t)
+                (line-end-position))))
     (cljbang-hash-map
      :type :src
      :language (nth 0 info)
      :name (nth 4 info)
      :headers headers
      :body (nth 1 info)
-     :index (cljbang-org--index-at (point))
-     :begin (point)
-     :end (save-excursion
-            (re-search-forward "^[ \t]*#\\+end_src" nil t)
-            (line-end-position))
+     :index (cljbang-org--index-at begin)
+     :begin begin
+     :end end
+     :line-start (cljbang-org--line-of begin)
+     :line-end (cljbang-org--last-line-of begin end)
      :file (buffer-file-name))))
 
 (defun cljbang-org--collect-blocks ()
@@ -366,8 +398,10 @@ defaults included, so an untangled block carries :tangle \"no\"."
 (defun cljbang-org-src-blocks (file &optional opts)
   "Src blocks in FILE as a vector of block maps.
 A block map holds :type :language :name :headers :body :index :begin
-:end :file.  :headers is the resolved header-arg map, defaults
-included, so an untangled block carries :tangle \"no\".
+:end :line-start :line-end :file.  :headers is the resolved header-arg
+map, defaults included, so an untangled block carries :tangle \"no\".
+The span runs from the `#+begin_src' line to the `#+end_src' line, as
+positions and again as inclusive lines.
 
 OPTS: {:under selector} restricts to every matching subtree, in
 document order; {:expand-transclusions? true} scans transcluded content
@@ -382,10 +416,12 @@ names the block under :under -- but not under
 
 (defun cljbang-org--call-block (el)
   "Babel-call element EL as a map: :type :name :call :arguments :value
-:index :begin :end :file.  :call names the block being invoked and
-:arguments the text inside its parens; :value is the call verbatim,
-e.g. \"deploy(HOST=web1)\"."
-  (let ((begin (cljbang-org--call-begin el)))
+:index :begin :end :line-start :line-end :file.  :call names the block
+being invoked and :arguments the text inside its parens; :value is the
+call verbatim, e.g. \"deploy(HOST=web1)\".  A call is one line, so
+:line-start and :line-end are that line."
+  (let* ((begin (cljbang-org--call-begin el))
+         (end (save-excursion (goto-char begin) (line-end-position))))
     (cljbang-hash-map
      :type :call
      :name (cljbang-org--str (org-element-property :name el))
@@ -394,7 +430,9 @@ e.g. \"deploy(HOST=web1)\"."
      :value (cljbang-org--str (org-element-property :value el))
      :index (cljbang-org--index-at begin)
      :begin begin
-     :end (save-excursion (goto-char begin) (line-end-position))
+     :end end
+     :line-start (cljbang-org--line-of begin)
+     :line-end (cljbang-org--last-line-of begin end)
      :file (buffer-file-name))))
 
 (defun cljbang-org--collect-calls ()
@@ -407,8 +445,9 @@ e.g. \"deploy(HOST=web1)\"."
 (defun cljbang-org-call-blocks (file &optional opts)
   "The `#+call:' lines in FILE as a vector of call maps.
 A call map holds :type :name :call :arguments :value :index :begin :end
-:file.  :call names the block being invoked and :arguments the text
-inside its parens; :value is the call verbatim.
+:line-start :line-end :file.  :call names the block being invoked and
+:arguments the text inside its parens; :value is the call verbatim.  A
+call is one line, so :line-start and :line-end are that line.
 
 Takes the same opts `cljbang-org-src-blocks' does.
 
@@ -435,12 +474,18 @@ secondary string; a query returns what the file says."
 
 (defun cljbang-org--table-at-point (el)
   "Table element EL as a map: :name :rows :caption :formulas :begin
-:end :file.  :rows holds every row in file order, a vector of trimmed
-cell strings, with :hline for each horizontal rule -- lossless, so
-`cljbang-org-rows' and `cljbang-org-table->maps' can take the shape from
-here.  :formulas holds the #+TBLFM: lines verbatim."
-  (let ((begin (org-element-property :begin el))
-        (post (org-element-property :post-affiliated el)))
+:end :line-start :line-end :file.  :rows holds every row in file order,
+a vector of trimmed cell strings, with :hline for each horizontal rule
+-- lossless, so `cljbang-org-rows' and `cljbang-org-table->maps' can
+take the shape from here.  :formulas holds the #+TBLFM: lines verbatim.
+The span covers the affiliated keywords too, as positions and again as
+inclusive lines."
+  (let* ((begin (org-element-property :begin el))
+         (post (org-element-property :post-affiliated el))
+         (end (save-excursion
+                (goto-char (org-element-property :end el))
+                (skip-chars-backward " \t\n")
+                (point))))
     (cljbang-hash-map
      :name (org-element-property :name el)
      :rows (apply #'vector
@@ -453,10 +498,9 @@ here.  :formulas holds the #+TBLFM: lines verbatim."
      :caption (cljbang-org--caption begin post)
      :formulas (apply #'vector (org-element-property :tblfm el))
      :begin begin
-     :end (save-excursion
-            (goto-char (org-element-property :end el))
-            (skip-chars-backward " \t\n")
-            (point))
+     :end end
+     :line-start (cljbang-org--line-of begin)
+     :line-end (cljbang-org--last-line-of begin end)
      :file (buffer-file-name))))
 
 (defun cljbang-org--collect-tables ()
@@ -481,7 +525,9 @@ are not org data and are skipped."
 ;;;###autoload
 (defun cljbang-org-tables (file &optional opts)
   "Org tables in FILE as a vector of table maps.
-A table map holds :name :rows :caption :formulas :begin :end :file.
+A table map holds :name :rows :caption :formulas :begin :end
+:line-start :line-end :file.  The span covers the affiliated keywords
+too, as positions and again as inclusive lines.
 :rows is every row in document order, a vector of trimmed cell strings,
 with :hline for each horizontal rule -- lossless, so
 `cljbang-org-rows' and `cljbang-org-table->maps' take their input

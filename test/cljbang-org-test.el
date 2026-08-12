@@ -154,6 +154,96 @@ skipping the meta data of an empty entry lands on that heading."
                         (mapv :body))"
                   (cljbang-org-test--fixture "runnable.org")))))
 
+;;; Line ranges
+
+(defun cljbang-org-test--lines (file start end)
+  "Lines START..END of FILE, inclusive, as a string."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (forward-line (1- start))
+    (buffer-substring-no-properties
+     (point)
+     (progn (forward-line (1+ (- end start))) (point)))))
+
+(ert-deftest cljbang-org-test-headings-line-range ()
+  ":line-start and :line-end are the subtree's span in lines, so a
+heading's contains its children's the way :begin and :end do."
+  (should (equal [["Quadlets" 5 33]
+                  ["caddy.container" 10 16]
+                  ["caddy_data.volume" 17 22]
+                  ["notes" 23 33]
+                  ["Demo" 34 42]
+                  ["aly-odoo-16-demo.container" 36 42]
+                  ["State checks" 43 45]]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/headings %S)
+                        (mapv #(vector (:title %%) (:line-start %%) (:line-end %%))))"
+                  (cljbang-org-test--fixture "server.org")))))
+
+(ert-deftest cljbang-org-test-headings-line-range-reads-back ()
+  "The range is what it claims: read those lines out of the file and
+the first is the heading, the last is inside the subtree and not the
+next heading.  This is the whole point of carrying lines next to
+positions -- a caller reading org back a section at a time counts
+lines, and cannot count buffer positions."
+  (let* ((file (cljbang-org-test--fixture "server.org"))
+         (h (cljbang-org-test--heading file "caddy.container"))
+         (text (cljbang-org-test--lines file
+                                        (cljbang-get h :line-start)
+                                        (cljbang-get h :line-end))))
+    (should (string-prefix-p "** caddy.container\n" text))
+    (should (string-match-p "Image=caddy" text))
+    (should-not (string-match-p "caddy_data.volume" text))))
+
+(ert-deftest cljbang-org-test-headings-line-range-of-the-last-heading ()
+  "The last subtree ends at the last line of the file and not past it."
+  (let* ((file (cljbang-org-test--fixture "server.org"))
+         (h (cljbang-org-test--heading file "State checks")))
+    (should (= 45 (cljbang-get h :line-end)))
+    (should (equal "Some prose.\n"
+                   (cljbang-org-test--lines file 45 45)))))
+
+(ert-deftest cljbang-org-test-src-blocks-line-range ()
+  "A block's range frames it: `#+begin_src' on the first line and
+`#+end_src' on the last, so the lines are the block and nothing else."
+  (let* ((file (cljbang-org-test--fixture "server.org"))
+         (b (cljbang-org-test--eval
+             "(first (cljbang.org/src-blocks %S))" file))
+         (text (cljbang-org-test--lines file
+                                        (cljbang-get b :line-start)
+                                        (cljbang-get b :line-end))))
+    (should (equal [12 15] (vector (cljbang-get b :line-start)
+                                   (cljbang-get b :line-end))))
+    (should (string-prefix-p "#+begin_src systemd" text))
+    (should (string-suffix-p "#+end_src\n" text))))
+
+(ert-deftest cljbang-org-test-call-blocks-line-range ()
+  "A call is one line, and its range is that line."
+  (should (equal [[22 22]]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/call-blocks %S)
+                        (mapv #(vector (:line-start %%) (:line-end %%))))"
+                  (cljbang-org-test--fixture "runnable.org")))))
+
+(ert-deftest cljbang-org-test-tables-line-range ()
+  "A table's range starts at its affiliated keywords, where :begin
+does, and ends on the last row rather than the blank line after it."
+  (should (equal [5 10]
+                 (cljbang-org-test--eval
+                  "(let [tbl (first (cljbang.org/tables %S))]
+                     [(:line-start tbl) (:line-end tbl)])"
+                  (cljbang-org-test--fixture "tables.org")))))
+
+(ert-deftest cljbang-org-test-line-range-is-absolute-under-narrowing ()
+  ":under narrows to the subtree to scan it, and a line counted inside
+that narrowing would start again at 1.  The numbers are the file's."
+  (should (equal [[38 41]]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/src-blocks %S {:under \"Demo\"})
+                        (mapv #(vector (:line-start %%) (:line-end %%))))"
+                  (cljbang-org-test--fixture "server.org")))))
+
 ;;; Tree
 
 (ert-deftest cljbang-org-test-tree-nests-by-level ()

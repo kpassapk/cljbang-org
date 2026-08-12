@@ -77,10 +77,16 @@ belong to the file.
 
 All headings in `file` as a vector of heading maps.
 A heading map holds `:title` `:level` `:tags` `:todo` `:priority` `:scheduled`
-`:deadline` `:properties` `:begin` `:end` `:file`, and `:body` when asked for.
-`:scheduled` and `:deadline` are the timestamp as the file writes it, or
-`nil`; `:tags` is a set; `:properties` is keyed by the upcased property
-name.
+`:deadline` `:properties` `:begin` `:end` `:line-start` `:line-end` `:file`, and
+`:body` when asked for.  `:scheduled` and `:deadline` are the timestamp as
+the file writes it, or `nil`; `:tags` is a set; `:properties` is keyed by the
+upcased property name.
+
+`:begin` and `:end` are buffer positions and `:line-start` and `:line-end` the
+same span in lines, inclusive at both ends.  Both cover the whole
+subtree, so a heading's span contains its children's: an outline read
+back a section at a time is `:line-start` to the next sibling's, and
+the lines a heading owns alone are its own down to its first child's.
 
 `opts`: `{:body? true}` adds each heading's own text as `:body` — its own
 prose, with the planning line, the drawers and anything belonging to a
@@ -110,8 +116,10 @@ the indices stay put.
 
 Src blocks in `file` as a vector of block maps.
 A block map holds `:type` `:language` `:name` `:headers` `:body` `:index` `:begin`
-`:end` `:file`.  `:headers` is the resolved header-arg map, defaults
-included, so an untangled block carries `:tangle` `"no"`.
+`:end` `:line-start` `:line-end` `:file`.  `:headers` is the resolved header-arg
+map, defaults included, so an untangled block carries `:tangle` `"no"`.
+The span runs from the `#+begin_src` line to the `#+end_src` line, as
+positions and again as inclusive lines.
 
 `opts`: `{:under selector}` restricts to every matching subtree, in
 document order; `{:expand-transclusions? true}` scans transcluded content
@@ -129,8 +137,9 @@ names the block under `:under` — but not under
 
 The `#+call:` lines in `file` as a vector of call maps.
 A call map holds `:type` `:name` `:call` `:arguments` `:value` `:index` `:begin` `:end`
-`:file`.  `:call` names the block being invoked and `:arguments` the text
-inside its parens; `:value` is the call verbatim.
+`:line-start` `:line-end` `:file`.  `:call` names the block being invoked and
+`:arguments` the text inside its parens; `:value` is the call verbatim.  A
+call is one line, so `:line-start` and `:line-end` are that line.
 
 Takes the same opts [`org/src-blocks`](#orgsrc-blocks) does.
 
@@ -150,7 +159,9 @@ document is:
 `(org/tables file & [opts])`
 
 Org tables in `file` as a vector of table maps.
-A table map holds `:name` `:rows` `:caption` `:formulas` `:begin` `:end` `:file`.
+A table map holds `:name` `:rows` `:caption` `:formulas` `:begin` `:end`
+`:line-start` `:line-end` `:file`.  The span covers the affiliated keywords
+too, as positions and again as inclusive lines.
 `:rows` is every row in document order, a vector of trimmed cell strings,
 with `:hline` for each horizontal rule — lossless, so
 [`org/rows`](#orgrows) and [`org/table->maps`](#orgtable-maps) take their input
