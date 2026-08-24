@@ -1195,7 +1195,7 @@ block it names, which is the one that has to be loaded."
                       (error "cljbang-org: call line names no block: %s"
                              (org-element-property :call datum)))))
         (cljbang-org--require-lang (car info))
-        (if (>= (cdr (func-arity 'org-babel-execute-src-block)) 4)
+        (if (version<= "9.6" (org-release))
             (org-babel-execute-src-block nil info nil 'babel-call)
           (org-babel-execute-src-block nil info))))))
 
