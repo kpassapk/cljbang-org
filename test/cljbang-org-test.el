@@ -455,6 +455,63 @@ gives every runnable step of the file in order."
     (should (equal "1" (cljbang-get row :a)))
     (should (equal "" (cljbang-get row :col-2)))))
 
+;;; Drawers
+
+(ert-deftest cljbang-org-test-drawers-names-in-order ()
+  "Three drawers; the property drawers and the one inside the example
+block are not among them."
+  (should (equal ["OPERATOR" "LOGBOOK" "EMPTY"]
+                 (cljbang-org-test--eval
+                  "(mapv :name (cljbang.org/drawers %S))"
+                  (cljbang-org-test--fixture "drawers.org")))))
+
+(ert-deftest cljbang-org-test-drawers-body-is-the-text-between ()
+  (should (equal "Under 80% used: continue.\nOtherwise stop."
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/drawers %S) first :body)"
+                  (cljbang-org-test--fixture "drawers.org"))))
+  (should (null (cljbang-org-test--eval
+                 "(->> (cljbang.org/drawers %S) last :body)"
+                 (cljbang-org-test--fixture "drawers.org")))))
+
+(ert-deftest cljbang-org-test-drawers-line-range ()
+  "From the `:OPERATOR:' line to its `:END:' line, inclusive."
+  (let ((file (cljbang-org-test--fixture "drawers.org")))
+    (should (equal [15 18]
+                   (cljbang-org-test--eval
+                    "(let [d (first (cljbang.org/drawers %S))]
+                       [(:line-start d) (:line-end d)])"
+                    file)))
+    (should (equal ":OPERATOR:"
+                   (with-temp-buffer
+                     (insert-file-contents file)
+                     (goto-char (point-min))
+                     (forward-line 14)
+                     (string-trim (thing-at-point 'line t)))))))
+
+(ert-deftest cljbang-org-test-drawers-under ()
+  (should (equal ["LOGBOOK" "EMPTY"]
+                 (cljbang-org-test--eval
+                  "(mapv :name (cljbang.org/drawers %S {:under \"Step two\"}))"
+                  (cljbang-org-test--fixture "drawers.org"))))
+  (should (equal []
+                 (cljbang-org-test--eval
+                  "(vec (cljbang.org/drawers %S {:under \"Step three\"}))"
+                  (cljbang-org-test--fixture "drawers.org")))))
+
+(ert-deftest cljbang-org-test-drawers-belong-to-the-heading-spanning-them ()
+  "The heading a drawer belongs to is found by span, in Clojure."
+  (should (equal "Step one"
+                 (cljbang-org-test--eval
+                  "(let [f %S
+                         d (first (cljbang.org/drawers f))]
+                     (->> (cljbang.org/headings f)
+                          (filter #(and (<= (:begin %%) (:begin d))
+                                        (< (:begin d) (:end %%))))
+                          last
+                          :title))"
+                  (cljbang-org-test--fixture "drawers.org")))))
+
 ;;; File keywords
 
 (ert-deftest cljbang-org-test-keywords ()

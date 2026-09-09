@@ -1,0 +1,40 @@
+#+TITLE: Drawers
+
+* Step one
+:PROPERTIES:
+:STEP:     1
+:END:
+
+Some prose.
+
+#+name: check
+#+begin_src sh :results output
+echo ok
+#+end_src
+
+:OPERATOR:
+Under 80% used: continue.
+Otherwise stop.
+:END:
+
+* Step two
+:PROPERTIES:
+:STEP:     2
+:END:
+:LOGBOOK:
+- Note taken on [2026-01-01 Thu 10:00] \\
+  a note
+:END:
+
+#+begin_example
+:OPERATOR:
+this one is text, not a drawer
+:END:
+#+end_example
+
+:EMPTY:
+:END:
+
+* Step three
+
+Nothing here.

@@ -541,6 +541,81 @@ document order; {:expand-transclusions? true} scans transcluded content
 too."
   (cljbang-org--scan file opts #'cljbang-org--collect-tables))
 
+;;; Drawers
+
+;; A drawer is a heading's aside: `:LOGBOOK:', `:OPERATOR:', anything
+;; the file wraps in `:NAME:' and `:END:'.  A heading's :body skips
+;; them by design, and this is the complement, not a change to it.
+;; The property drawer is not one: it is the heading's :properties.
+
+(defun cljbang-org--drawer-at-point (el)
+  "Drawer element EL as a map: :name :body :begin :end :line-start
+:line-end :file.  :name is the drawer's own, as the file writes it,
+and :body the text between its two lines, trimmed, or nil for an
+empty drawer.  The span runs from the `:NAME:' line to the `:END:'
+line, as positions and again as inclusive lines."
+  (let* ((begin (org-element-property :begin el))
+         (end (save-excursion
+                (goto-char (org-element-property :end el))
+                (skip-chars-backward " \t\n")
+                (point)))
+         (cbeg (org-element-property :contents-begin el))
+         (cend (org-element-property :contents-end el))
+         (body (and cbeg cend
+                    (string-trim (buffer-substring-no-properties cbeg cend)))))
+    (cljbang-hash-map
+     :name (cljbang-org--str (org-element-property :drawer-name el))
+     :body (unless (or (null body) (string-empty-p body)) body)
+     :begin begin
+     :end end
+     :line-start (cljbang-org--line-of begin)
+     :line-end (cljbang-org--last-line-of begin end)
+     :file (buffer-file-name))))
+
+(defun cljbang-org--collect-drawers ()
+  "Drawers in the accessible portion, as a vector of drawer maps.
+Every candidate line is checked against the element at point, the way
+the tables reader does, so a `:NAME:' line inside a src or example
+block is text, and a property drawer is left to :properties."
+  (let (acc)
+    (goto-char (point-min))
+    (while (re-search-forward org-drawer-regexp nil t)
+      (beginning-of-line)
+      (let ((el (org-element-at-point)))
+        (when (eq (org-element-type el) 'drawer)
+          (push (cljbang-org--drawer-at-point el) acc))
+        ;; past the whole element when it is a drawer, so its `:END:'
+        ;; line is not a candidate; one line otherwise, since the element
+        ;; at a `:NAME:' line inside a paragraph is the paragraph, and a
+        ;; drawer may begin further down in it
+        (goto-char (if (eq (org-element-type el) 'drawer)
+                       (max (org-element-property :end el)
+                            (line-beginning-position 2))
+                     (line-beginning-position 2)))))
+    (apply #'vector (nreverse acc))))
+
+;;;###autoload
+(defun cljbang-org-drawers (file &optional opts)
+  "Drawers in FILE as a vector of drawer maps.
+A drawer map holds :name :body :begin :end :line-start :line-end
+:file.  :name is the drawer's, upcased or not as the file has it, and
+:body is the text between its `:NAME:' and `:END:' lines, trimmed, or
+nil when there is none.  The span runs from the one line to the
+other, as positions and again as inclusive lines.
+
+Property drawers are not here: they are a heading's :properties.  A
+`:NAME:' line inside a src or example block is text and is skipped.
+
+OPTS: {:under selector} restricts to every matching subtree, in
+document order; {:expand-transclusions? true} scans transcluded content
+too.
+
+Which heading a drawer belongs to is the heading whose span contains
+its :begin, which is Clojure's job over the two vectors:
+
+  (filter #(< (:begin h) (:begin %) (:end h)) (org/drawers f))"
+  (cljbang-org--scan file opts #'cljbang-org--collect-drawers))
+
 ;;; File keywords
 
 ;; The `#+TITLE:' lines: org's in-buffer settings, and whatever else a
