@@ -174,6 +174,38 @@ Pipes inside a src or example block are text, not a table, and
 document order; `{:expand-transclusions? true}` scans transcluded content
 too.
 
+## Drawers
+
+A drawer is a heading's aside: `:LOGBOOK:`, `:OPERATOR:`, anything
+the file wraps in `:NAME:` and `:END:`.  A heading's `:body` skips
+them by design, and this is the complement, not a change to it.
+The property drawer is not one: it is the heading's `:properties`.
+
+### org/drawers
+
+`(org/drawers file & [opts])`
+
+Drawers in `file` as a vector of drawer maps.
+A drawer map holds `:name` `:body` `:begin` `:end` `:line-start` `:line-end`
+`:file`.  `:name` is the drawer's, upcased or not as the file has it, and
+`:body` is the text between its `:NAME:` and `:END:` lines, trimmed, or
+`nil` when there is none.  The span runs from the one line to the
+other, as positions and again as inclusive lines.
+
+Property drawers are not here: they are a heading's `:properties`.  A
+`:NAME:` line inside a src or example block is text and is skipped.
+
+`opts`: `{:under selector}` restricts to every matching subtree, in
+document order; `{:expand-transclusions? true}` scans transcluded content
+too.
+
+Which heading a drawer belongs to is the heading whose span contains
+its `:begin`, which is Clojure's job over the two vectors:
+
+```clojure
+(filter #(< (:begin h) (:begin %) (:end h)) (org/drawers f))
+```
+
 ## File keywords
 
 The `#+TITLE:` lines: org's in-buffer settings, and whatever else a
