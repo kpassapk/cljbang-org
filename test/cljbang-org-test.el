@@ -174,7 +174,7 @@ heading's contains its children's the way :begin and :end do."
                   ["caddy_data.volume" 17 22]
                   ["notes" 23 33]
                   ["Demo" 34 42]
-                  ["aly-odoo-16-demo.container" 36 42]
+                  ["odoo-16-demo.container" 36 42]
                   ["State checks" 43 45]]
                  (cljbang-org-test--eval
                   "(->> (cljbang.org/headings %S)
@@ -248,7 +248,7 @@ that narrowing would start again at 1.  The numbers are the file's."
 
 (ert-deftest cljbang-org-test-tree-nests-by-level ()
   (should (equal [["Quadlets" ["caddy.container" "caddy_data.volume" "notes"]]
-                  ["Demo" ["aly-odoo-16-demo.container"]]
+                  ["Demo" ["odoo-16-demo.container"]]
                   ["State checks" []]]
                  (cljbang-org-test--eval
                   "(->> (cljbang.org/headings %S)
@@ -454,6 +454,58 @@ gives every runnable step of the file in order."
   (let ((row (aref (cljbang-org-table->maps '(("a" "") hline ("1"))) 0)))
     (should (equal "1" (cljbang-get row :a)))
     (should (equal "" (cljbang-get row :col-2)))))
+
+;;; Examples
+
+(ert-deftest cljbang-org-test-examples-types-in-order ()
+  "Four examples: three fixed-width runs and one block.  The `: ' line
+inside the src block is text, and the src block named like an input
+is a src block."
+  (should (equal [:fixed-width :fixed-width :example :fixed-width]
+                 (cljbang-org-test--eval
+                  "(mapv :type (cljbang.org/examples %S))"
+                  (cljbang-org-test--fixture "examples.org")))))
+
+(ert-deftest cljbang-org-test-examples-names-values-and-caption ()
+  (let ((file (cljbang-org-test--fixture "examples.org")))
+    (should (equal [["input-instance" "instance-a"]
+                    ["input-port" "8080"]
+                    ["input-notes" "first line\nsecond line\n"]]
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/examples %S)
+                          (filter :name)
+                          (mapv (fn [e] [(:name e) (:value e)])))"
+                    file)))
+    (should (equal "The instance, from the DB"
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/examples %S) (keep :caption) first)"
+                    file)))))
+
+(ert-deftest cljbang-org-test-examples-value-is-what-babel-reads ()
+  "A `:var' naming the example gets the same text the map carries."
+  (cljbang-org-test--with-temp-fixture file "examples.org"
+    (should (equal "instance-a"
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/examples %S)
+                          (filter #(= \"input-instance\" (:name %%)))
+                          first :value)"
+                    file)))
+    (should (equal "instance-a"
+                   (with-current-buffer (cljbang-org--buffer file)
+                     (org-babel-ref-resolve "input-instance"))))))
+
+(ert-deftest cljbang-org-test-examples-line-range-covers-the-name ()
+  (should (equal [7 9]
+                 (cljbang-org-test--eval
+                  "(let [e (first (cljbang.org/examples %S))]
+                     [(:line-start e) (:line-end e)])"
+                  (cljbang-org-test--fixture "examples.org")))))
+
+(ert-deftest cljbang-org-test-examples-under ()
+  (should (equal ["input-instance" "input-port" "input-notes"]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/examples %S {:under \"Inputs\"}) (mapv :name))"
+                  (cljbang-org-test--fixture "examples.org")))))
 
 ;;; Drawers
 

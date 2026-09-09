@@ -541,6 +541,75 @@ document order; {:expand-transclusions? true} scans transcluded content
 too."
   (cljbang-org--scan file opts #'cljbang-org--collect-tables))
 
+;;; Examples
+
+;; The literal data a file carries: a `: value' fixed-width line and
+;; a `#+begin_example' block.  Named, either is what a `:var' names
+;; when it does not name a block -- the input a runbook is run with
+;; -- and babel reads it through `org-babel-read-element', which is
+;; the shape :value keeps to.
+
+(defun cljbang-org--example-at-point (el)
+  "Fixed-width or example-block element EL as a map: :type :name
+:value :caption :begin :end :line-start :line-end :file.  :type is
+:fixed-width or :example.  :value is the text as a `:var' naming the
+element would receive it: a fixed-width run with its `: ' prefixes
+gone and trimmed, an example block's contents with their common
+indentation removed.  The span covers the affiliated keywords too,
+as positions and again as inclusive lines."
+  (let* ((type (org-element-type el))
+         (begin (org-element-property :begin el))
+         (post (org-element-property :post-affiliated el))
+         (end (save-excursion
+                (goto-char (org-element-property :end el))
+                (skip-chars-backward " \t\n")
+                (point)))
+         (value (or (org-element-property :value el) "")))
+    (cljbang-hash-map
+     :type (if (eq type 'fixed-width) :fixed-width :example)
+     :name (cljbang-org--str (org-element-property :name el))
+     :value (if (eq type 'fixed-width)
+                (org-trim value)
+              (org-remove-indentation value))
+     :caption (cljbang-org--caption begin post)
+     :begin begin
+     :end end
+     :line-start (cljbang-org--line-of begin)
+     :line-end (cljbang-org--last-line-of begin end)
+     :file (buffer-file-name))))
+
+(defun cljbang-org--collect-examples ()
+  "Fixed-width runs and example blocks in the accessible portion, as a
+vector of example maps in document order."
+  (apply #'vector
+         (org-element-map (org-element-parse-buffer 'element)
+             '(fixed-width example-block)
+           #'cljbang-org--example-at-point)))
+
+;;;###autoload
+(defun cljbang-org-examples (file &optional opts)
+  "Fixed-width runs and example blocks in FILE as a vector of maps.
+An example map holds :type :name :value :caption :begin :end
+:line-start :line-end :file.  :type is :fixed-width for a run of
+`: ' lines and :example for a `#+begin_example' block; :name is the
+`#+name:' above it, or nil; :caption the `#+caption:' line, or nil.
+
+:value is the text the way a `:var' naming the element receives it,
+which is how `org-babel-read-element' reads it: a fixed-width run
+loses its `: ' prefixes and is trimmed, an example block keeps its
+lines with the common indentation removed.  A number stays a string
+here; babel is what turns \"8080\" into 8080.
+
+The span covers the affiliated keywords too, as positions and again
+as inclusive lines.
+
+OPTS: {:under selector} restricts to every matching subtree, in
+document order; {:expand-transclusions? true} scans transcluded content
+too.
+
+  (->> (org/examples f) (filter :name) (map (juxt :name :value)))"
+  (cljbang-org--scan file opts #'cljbang-org--collect-examples))
+
 ;;; Drawers
 
 ;; A drawer is a heading's aside: `:LOGBOOK:', `:OPERATOR:', anything

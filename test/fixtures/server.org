@@ -33,9 +33,9 @@ echo no tangle header
 
 * Demo                                                              :project:
 
-** aly-odoo-16-demo.container
+** odoo-16-demo.container
 
-#+begin_src systemd :tangle ~/.config/containers/systemd/aly-odoo-16-demo.container
+#+begin_src systemd :tangle ~/.config/containers/systemd/odoo-16-demo.container
 [Container]
 Image=demo
 #+end_src
