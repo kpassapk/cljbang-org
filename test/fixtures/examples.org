@@ -1,0 +1,38 @@
+#+TITLE: Examples
+
+* Inputs
+
+Instance to deploy
+
+#+name: input-instance
+#+caption: The instance, from the DB
+: aly-andina
+
+#+name: input-port
+: 8080
+
+#+name: input-notes
+#+begin_example
+  first line
+  second line
+#+end_example
+
+* Output
+
+A result, not an input:
+
+#+RESULTS: server
+: aly-2602-suite
+
+A block whose name looks like an input is a runnable:
+
+#+name: input-container
+#+begin_src sh :results output
+echo container
+#+end_src
+
+Colons inside a block are text:
+
+#+begin_src sh
+: not-an-example
+#+end_src

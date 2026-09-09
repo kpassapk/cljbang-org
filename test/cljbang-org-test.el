@@ -455,6 +455,58 @@ gives every runnable step of the file in order."
     (should (equal "1" (cljbang-get row :a)))
     (should (equal "" (cljbang-get row :col-2)))))
 
+;;; Examples
+
+(ert-deftest cljbang-org-test-examples-types-in-order ()
+  "Four examples: three fixed-width runs and one block.  The `: ' line
+inside the src block is text, and the src block named like an input
+is a src block."
+  (should (equal [:fixed-width :fixed-width :example :fixed-width]
+                 (cljbang-org-test--eval
+                  "(mapv :type (cljbang.org/examples %S))"
+                  (cljbang-org-test--fixture "examples.org")))))
+
+(ert-deftest cljbang-org-test-examples-names-values-and-caption ()
+  (let ((file (cljbang-org-test--fixture "examples.org")))
+    (should (equal [["input-instance" "aly-andina"]
+                    ["input-port" "8080"]
+                    ["input-notes" "first line\nsecond line\n"]]
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/examples %S)
+                          (filter :name)
+                          (mapv (juxt :name :value)))"
+                    file)))
+    (should (equal "The instance, from the DB"
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/examples %S) (keep :caption) first)"
+                    file)))))
+
+(ert-deftest cljbang-org-test-examples-value-is-what-babel-reads ()
+  "A `:var' naming the example gets the same text the map carries."
+  (cljbang-org-test--with-temp-fixture file "examples.org"
+    (should (equal "aly-andina"
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/examples %S)
+                          (filter #(= \"input-instance\" (:name %%)))
+                          first :value)"
+                    file)))
+    (should (equal "aly-andina"
+                   (with-current-buffer (cljbang-org--buffer file)
+                     (org-babel-ref-resolve "input-instance"))))))
+
+(ert-deftest cljbang-org-test-examples-line-range-covers-the-name ()
+  (should (equal [7 9]
+                 (cljbang-org-test--eval
+                  "(let [e (first (cljbang.org/examples %S))]
+                     [(:line-start e) (:line-end e)])"
+                  (cljbang-org-test--fixture "examples.org")))))
+
+(ert-deftest cljbang-org-test-examples-under ()
+  (should (equal ["input-instance" "input-port" "input-notes"]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/examples %S {:under \"Inputs\"}) (mapv :name))"
+                  (cljbang-org-test--fixture "examples.org")))))
+
 ;;; Drawers
 
 (ert-deftest cljbang-org-test-drawers-names-in-order ()

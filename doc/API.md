@@ -174,6 +174,41 @@ Pipes inside a src or example block are text, not a table, and
 document order; `{:expand-transclusions? true}` scans transcluded content
 too.
 
+## Examples
+
+The literal data a file carries: a `: value' fixed-width line and
+a `#+begin_example` block.  Named, either is what a ``:var`` names
+when it does not name a block -- the input a runbook is run with
+-- and babel reads it through `org-babel-read-element`, which is
+the shape `:value` keeps to.
+
+### org/examples
+
+`(org/examples file & [opts])`
+
+Fixed-width runs and example blocks in `file` as a vector of maps.
+An example map holds `:type` `:name` `:value` `:caption` `:begin` `:end`
+`:line-start` `:line-end` `:file`.  `:type` is `:fixed-width` for a run of
+`: ' lines and :example for a `#+begin_example` block; :name is the
+`#+name:` above it, or nil; :caption the `#+caption:` line, or nil.
+
+:value is the text the way a ``:var`` naming the element receives it,
+which is how `org-babel-read-element` reads it: a fixed-width run
+loses its `: ' prefixes and is trimmed, an example block keeps its
+lines with the common indentation removed.  A number stays a string
+here; babel is what turns `"8080"` into 8080.
+
+The span covers the affiliated keywords too, as positions and again
+as inclusive lines.
+
+`opts`: `{:under selector}` restricts to every matching subtree, in
+document order; `{:expand-transclusions? true}` scans transcluded content
+too.
+
+```clojure
+(->> (org/examples f) (filter :name) (map (juxt :name :value)))
+```
+
 ## Drawers
 
 A drawer is a heading's aside: `:LOGBOOK:`, `:OPERATOR:`, anything
