@@ -1,0 +1,20 @@
+#+TITLE: Inputs
+
+* Inputs
+
+#+name: input-instance
+: aly-andina
+
+* Steps
+
+#+name: server
+#+begin_src sh :results output :var INSTANCE=input-instance
+echo "server-of-$INSTANCE"
+#+end_src
+
+#+name: uses-server
+#+begin_src sh :results output :var SERVER=server
+echo "on $SERVER"
+#+end_src
+
+#+call: server(INSTANCE=input-instance)

@@ -526,14 +526,33 @@ Tangle `file`; the tangled file names as a vector.
 
 ## Executing a block
 
+Inputs.  A block's `:var X=input-instance' is a reference babel
+resolves through `org-babel-ref-resolve`, wherever it is resolved:
+for the block itself, and again for a value block re-run because
+a later block references it.  [`org/execute!`](#orgexecute) binds the
+:inputs it was given around the run, and an advice on that one
+function answers from them before looking at the buffer.  The
+file is never edited to run it with other values, so there is
+nothing to restore when a run fails.  The advice is installed
+once and inert while the variable is nil, which is always outside
+an `execute!` that passed `:inputs`.
+
 ### org/execute!
 
-`(org/execute! file & [selector])`
+`(org/execute! file & [selector opts])`
 
 Execute the runnable block in `file` named by `selector`; its result.
 `selector` is a block name, a map with `:name` or `:index`, or `nil` for the
 file's only runnable block; a block map from a query is one.  `:index`
 counts src blocks and `#+call:` lines together, in file order.
+
+`opts`: {`:inputs` `{"input-instance" "aly-andina"}`} binds values for
+the references the run resolves.  A `:var X=input-instance' on the
+block, on a block it pulls in through another ``:var``, or on a
+`#+call:` line, gets the bound value instead of what the file names,
+and the file is not edited to do it.  The names are what the ``:var``
+writes after the `=`: a block name, an example's name.  The binding
+lasts for this one call.
 
 An effect, because a block can do anything and its results land in the
 buffer: [`org/save!`](#orgsave) writes them to disk, [`org/revert!`](#orgrevert)
@@ -549,6 +568,7 @@ stderr with a zero exit is not a failure and does not raise.
 (org/execute! f "deploy")           ; the block named deploy
 (org/execute! f {:index 2})         ; the third runnable block
 (->> (org/src-blocks f) (filter ...) first (org/execute! f))
+(org/execute! f "server" {:inputs {"input-instance" "aly-andina"}})
 ```
 
 ## Shaping results

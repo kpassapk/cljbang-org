@@ -1265,6 +1265,39 @@ Edits the visiting buffer only; `cljbang-org-save!' persists."
 
 ;;; Executing a block
 
+;; Inputs.  A block's `:var X=input-instance' is a reference babel
+;; resolves through `org-babel-ref-resolve', wherever it is resolved:
+;; for the block itself, and again for a value block re-run because
+;; a later block references it.  `cljbang-org-execute!' binds the
+;; :inputs it was given around the run, and an advice on that one
+;; function answers from them before looking at the buffer.  The
+;; file is never edited to run it with other values, so there is
+;; nothing to restore when a run fails.  The advice is installed
+;; once and inert while the variable is nil, which is always outside
+;; an `execute!' that passed :inputs.
+
+(defvar cljbang-org--inputs nil
+  "The :inputs of the `cljbang-org-execute!' in progress, or nil.
+A map from reference name to value, the names being what a `:var'
+writes after the `=': a block or example name.  Bound for one run.")
+
+(defun cljbang-org--input (ref)
+  "The value bound for REF in `cljbang-org--inputs', or nil.
+Keys are strings, the way cljbang writes them; a keyword is accepted
+too, for a map built on the elisp side."
+  (when cljbang-org--inputs
+    (let ((v (cljbang-get cljbang-org--inputs ref)))
+      (if (null v)
+          (cljbang-get cljbang-org--inputs (intern (concat ":" ref)))
+        v))))
+
+(defun cljbang-org--resolve-ref (orig ref)
+  "Around `org-babel-ref-resolve': an input bound for REF wins over the file."
+  (let ((v (cljbang-org--input ref)))
+    (if (null v) (funcall orig ref) v)))
+
+(advice-add 'org-babel-ref-resolve :around #'cljbang-org--resolve-ref)
+
 (defun cljbang-org--require-lang (lang)
   "Load the org-babel backend for LANG, a string, unless it is there.
 A batch Emacs loads no babel languages, so a block's backend has to be
@@ -1344,11 +1377,19 @@ block it names, which is the one that has to be loaded."
           (org-babel-execute-src-block nil info))))))
 
 ;;;###autoload
-(defun cljbang-org-execute! (file &optional selector)
+(defun cljbang-org-execute! (file &optional selector opts)
   "Execute the runnable block in FILE named by SELECTOR; its result.
 SELECTOR is a block name, a map with :name or :index, or nil for the
 file's only runnable block; a block map from a query is one.  :index
 counts src blocks and `#+call:' lines together, in file order.
+
+OPTS: {:inputs {\"input-instance\" \"aly-andina\"}} binds values for
+the references the run resolves.  A `:var X=input-instance' on the
+block, on a block it pulls in through another `:var', or on a
+`#+call:' line, gets the bound value instead of what the file names,
+and the file is not edited to do it.  The names are what the `:var'
+writes after the `=': a block name, an example's name.  The binding
+lasts for this one call.
 
 An effect, because a block can do anything and its results land in the
 buffer: `cljbang-org-save!' writes them to disk, `cljbang-org-revert!'
@@ -1362,7 +1403,8 @@ stderr with a zero exit is not a failure and does not raise.
   (org/execute! f)                    ; the only block
   (org/execute! f \"deploy\")           ; the block named deploy
   (org/execute! f {:index 2})         ; the third runnable block
-  (->> (org/src-blocks f) (filter ...) first (org/execute! f))"
+  (->> (org/src-blocks f) (filter ...) first (org/execute! f))
+  (org/execute! f \"server\" {:inputs {\"input-instance\" \"aly-andina\"}})"
   (cljbang-org--with-file file
     (cljbang-org--check-editable)
     ;; `org-babel-eval' swallows a failing process: it pops an error
@@ -1379,7 +1421,8 @@ stderr with a zero exit is not a failure and does not raise.
                                (if (string-empty-p stderr) ""
                                  (concat ": " stderr))))
                     (funcall notify exit-code stderr)))))
-      (let ((org-confirm-babel-evaluate nil))
+      (let ((org-confirm-babel-evaluate nil)
+            (cljbang-org--inputs (cljbang-org--opt opts :inputs)))
         (cljbang-org--goto-runnable file selector)
         (cljbang-org--execute-at-point)))))
 
