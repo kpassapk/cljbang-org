@@ -474,7 +474,7 @@ is a src block."
                    (cljbang-org-test--eval
                     "(->> (cljbang.org/examples %S)
                           (filter :name)
-                          (mapv (juxt :name :value)))"
+                          (mapv (fn [e] [(:name e) (:value e)])))"
                     file)))
     (should (equal "The instance, from the DB"
                    (cljbang-org-test--eval
