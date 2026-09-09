@@ -6,7 +6,7 @@ Instance to deploy
 
 #+name: input-instance
 #+caption: The instance, from the DB
-: aly-andina
+: instance-a
 
 #+name: input-port
 : 8080
@@ -22,7 +22,7 @@ Instance to deploy
 A result, not an input:
 
 #+RESULTS: server
-: aly-2602-suite
+: instance-b
 
 A block whose name looks like an input is a runnable:
 

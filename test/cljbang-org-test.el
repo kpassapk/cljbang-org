@@ -174,7 +174,7 @@ heading's contains its children's the way :begin and :end do."
                   ["caddy_data.volume" 17 22]
                   ["notes" 23 33]
                   ["Demo" 34 42]
-                  ["aly-odoo-16-demo.container" 36 42]
+                  ["odoo-16-demo.container" 36 42]
                   ["State checks" 43 45]]
                  (cljbang-org-test--eval
                   "(->> (cljbang.org/headings %S)
@@ -248,7 +248,7 @@ that narrowing would start again at 1.  The numbers are the file's."
 
 (ert-deftest cljbang-org-test-tree-nests-by-level ()
   (should (equal [["Quadlets" ["caddy.container" "caddy_data.volume" "notes"]]
-                  ["Demo" ["aly-odoo-16-demo.container"]]
+                  ["Demo" ["odoo-16-demo.container"]]
                   ["State checks" []]]
                  (cljbang-org-test--eval
                   "(->> (cljbang.org/headings %S)
@@ -468,7 +468,7 @@ is a src block."
 
 (ert-deftest cljbang-org-test-examples-names-values-and-caption ()
   (let ((file (cljbang-org-test--fixture "examples.org")))
-    (should (equal [["input-instance" "aly-andina"]
+    (should (equal [["input-instance" "instance-a"]
                     ["input-port" "8080"]
                     ["input-notes" "first line\nsecond line\n"]]
                    (cljbang-org-test--eval
@@ -484,13 +484,13 @@ is a src block."
 (ert-deftest cljbang-org-test-examples-value-is-what-babel-reads ()
   "A `:var' naming the example gets the same text the map carries."
   (cljbang-org-test--with-temp-fixture file "examples.org"
-    (should (equal "aly-andina"
+    (should (equal "instance-a"
                    (cljbang-org-test--eval
                     "(->> (cljbang.org/examples %S)
                           (filter #(= \"input-instance\" (:name %%)))
                           first :value)"
                     file)))
-    (should (equal "aly-andina"
+    (should (equal "instance-a"
                    (with-current-buffer (cljbang-org--buffer file)
                      (org-babel-ref-resolve "input-instance"))))))
 
