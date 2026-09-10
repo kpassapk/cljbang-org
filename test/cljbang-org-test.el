@@ -971,13 +971,13 @@ matching on text would overwrite it."
   (cljbang-org-test--with-temp-fixture file "runnable.org"
     (should (equal "hello\n"
                    (cljbang-org-test--eval
-                    "(cljbang.org/execute! %S \"greet\")" file)))))
+                    "(:value (cljbang.org/execute! %S \"greet\"))" file)))))
 
 (ert-deftest cljbang-org-test-execute-by-index ()
   (cljbang-org-test--with-temp-fixture file "runnable.org"
     (should (equal "second\n"
                    (cljbang-org-test--eval
-                    "(cljbang.org/execute! %S {:index 1})" file)))))
+                    "(:value (cljbang.org/execute! %S {:index 1}))" file)))))
 
 (ert-deftest cljbang-org-test-execute-a-call-line ()
   "A `#+call:' line runs the block it names and hands back its result,
@@ -987,7 +987,8 @@ which is the whole reason `call-blocks' exists next to `src-blocks'."
                    (cljbang-org-test--eval
                     "(->> (cljbang.org/call-blocks %S)
                           first
-                          (cljbang.org/execute! %S))"
+                          (cljbang.org/execute! %S)
+                          :value)"
                     file file)))))
 
 (ert-deftest cljbang-org-test-execute-a-block-map ()
@@ -997,19 +998,21 @@ which is the whole reason `call-blocks' exists next to `src-blocks'."
                    (cljbang-org-test--eval
                     "(->> (cljbang.org/src-blocks %S)
                           first
-                          (cljbang.org/execute! %S))"
+                          (cljbang.org/execute! %S)
+                          :value)"
                     file file)))
     (should (equal "second\n"
                    (cljbang-org-test--eval
                     "(->> (cljbang.org/src-blocks %S)
                           second
-                          (cljbang.org/execute! %S))"
+                          (cljbang.org/execute! %S)
+                          :value)"
                     file file)))))
 
 (ert-deftest cljbang-org-test-execute-the-only-block ()
   (cljbang-org-test--with-temp-fixture file "single.org"
     (should (equal "only\n"
-                   (cljbang-org-test--eval "(cljbang.org/execute! %S)" file)))))
+                   (cljbang-org-test--eval "(:value (cljbang.org/execute! %S))" file)))))
 
 (ert-deftest cljbang-org-test-execute-index-outlives-results ()
   "The point of numbering rather than pointing: a block that writes
@@ -1027,7 +1030,7 @@ its results back moves every position after it, and the indices stay."
         (should (equal [0 1 3] (funcall indices)))
         (should (equal "second\n"
                        (cljbang-org-test--eval
-                        "(cljbang.org/execute! %S {:index 1})" file)))))))
+                        "(:value (cljbang.org/execute! %S {:index 1}))" file)))))))
 
 (ert-deftest cljbang-org-test-execute-writes-to-the-buffer-then-saves ()
   (cljbang-org-test--with-temp-fixture file "runnable.org"
@@ -1040,15 +1043,30 @@ its results back moves every position after it, and the indices stay."
       (insert-file-contents file)
       (should (search-forward "#+RESULTS" nil t)))))
 
-(ert-deftest cljbang-org-test-execute-failure-raises ()
-  "org-babel would pop a buffer and return the partial output; a
-caller gets the exit code and stderr as an error instead."
+(ert-deftest cljbang-org-test-execute-result-shape ()
+  "A clean run: exit 0, stdout is the value, nothing on stderr."
   (cljbang-org-test--with-temp-fixture file "runnable.org"
-    (let ((err (should-error
-                (cljbang-org-test--eval
-                 "(cljbang.org/execute! %S {:index 3})" file))))
-      (should (string-match-p "code 3" (error-message-string err)))
-      (should (string-match-p "to-stderr" (error-message-string err))))))
+    (should (equal ["hello\n" 0 "hello\n" nil]
+                   (cljbang-org-test--eval
+                    "(let [r (cljbang.org/execute! %S \"greet\")]
+                       [(:value r) (:exit r) (:stdout r) (:stderr r)])" file)))))
+
+(ert-deftest cljbang-org-test-execute-failure-is-a-result ()
+  "org-babel would pop a buffer and return the partial output; a
+caller gets the exit code, the output so far and stderr, as data.
+Nothing raises: whether to go on is the caller's decision."
+  (cljbang-org-test--with-temp-fixture file "runnable.org"
+    (should (equal [3 "before-the-exit\n" "to-stderr\n"]
+                   (cljbang-org-test--eval
+                    "(let [r (cljbang.org/execute! %S {:index 3})]
+                       [(:exit r) (:stdout r) (:stderr r)])" file)))))
+
+(ert-deftest cljbang-org-test-execute-stderr-with-exit-zero-is-not-a-failure ()
+  (cljbang-org-test--with-temp-fixture file "inputs.org"
+    (should (equal [0 "warned\n" "a warning\n"]
+                   (cljbang-org-test--eval
+                    "(let [r (cljbang.org/execute! %S \"warns\")]
+                       [(:exit r) (:stdout r) (:stderr r)])" file)))))
 
 (ert-deftest cljbang-org-test-execute-bad-selectors ()
   (let ((file (cljbang-org-test--fixture "runnable.org")))
@@ -1064,11 +1082,11 @@ caller gets the exit code and stderr as an error instead."
   (cljbang-org-test--with-temp-fixture file "inputs.org"
     (should (equal "server-of-staging\n"
                    (cljbang-org-test--eval
-                    "(cljbang.org/execute! %S \"server\")" file)))
+                    "(:value (cljbang.org/execute! %S \"server\"))" file)))
     (should (equal "server-of-prod\n"
                    (cljbang-org-test--eval
-                    "(cljbang.org/execute! %S \"server\"
-                       {:inputs {\"input-instance\" \"prod\"}})"
+                    "(:value (cljbang.org/execute! %S \"server\"
+                       {:inputs {\"input-instance\" \"prod\"}}))"
                     file)))))
 
 (ert-deftest cljbang-org-test-execute-inputs-reach-a-referenced-block ()
@@ -1078,8 +1096,8 @@ references under the same binding, so the input travels the chain."
     ;; the value block's output ends in a newline, and so does the echo
     (should (equal "on server-of-prod\n\n"
                    (cljbang-org-test--eval
-                    "(cljbang.org/execute! %S \"uses-server\"
-                       {:inputs {\"input-instance\" \"prod\"}})"
+                    "(:value (cljbang.org/execute! %S \"uses-server\"
+                       {:inputs {\"input-instance\" \"prod\"}}))"
                     file)))))
 
 (ert-deftest cljbang-org-test-execute-inputs-reach-a-call-line ()
@@ -1088,7 +1106,8 @@ references under the same binding, so the input travels the chain."
                    (cljbang-org-test--eval
                     "(->> (cljbang.org/call-blocks %S)
                           last
-                          (#(cljbang.org/execute! %S %% {:inputs {\"input-instance\" \"prod\"}})))"
+                          (#(cljbang.org/execute! %S %% {:inputs {\"input-instance\" \"prod\"}}))
+                          :value)"
                     file file)))))
 
 (ert-deftest cljbang-org-test-execute-inputs-are-bound-for-one-call ()
@@ -1101,7 +1120,7 @@ and the file itself was never edited."
     (should (null cljbang-org--inputs))
     (should (equal "server-of-staging\n"
                    (cljbang-org-test--eval
-                    "(cljbang.org/execute! %S \"server\")" file)))
+                    "(:value (cljbang.org/execute! %S \"server\"))" file)))
     (should (string-match-p ": staging" (cljbang-org-test--text file)))
     (should-not (string-match-p "prod" (cljbang-org-test--text file)))))
 
