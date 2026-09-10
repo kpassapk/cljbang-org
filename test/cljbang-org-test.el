@@ -3,7 +3,7 @@
 ;;; Commentary:
 
 ;; Tests go through the Clojure surface with `cljbang-eval-string',
-;; the way cljbang's own suite does, so they prove both the behavior
+;; the way cljbang's own tests do, so they prove both the behavior
 ;; and that cljbang.org/foo resolves to cljbang-org-foo and the return
 ;; shapes interoperate with get, filter and keyword lookup.
 
@@ -1029,6 +1029,52 @@ caller gets the exit code and stderr as an error instead."
                    "(cljbang.org/execute! %S {:index 99})" file))
     (should-error (cljbang-org-test--eval
                    "(cljbang.org/execute! %S \"no such block\")" file))))
+
+(ert-deftest cljbang-org-test-execute-inputs-override-a-var ()
+  "The :var names the example in the file; the run gets the input."
+  (cljbang-org-test--with-temp-fixture file "inputs.org"
+    (should (equal "server-of-staging\n"
+                   (cljbang-org-test--eval
+                    "(cljbang.org/execute! %S \"server\")" file)))
+    (should (equal "server-of-prod\n"
+                   (cljbang-org-test--eval
+                    "(cljbang.org/execute! %S \"server\"
+                       {:inputs {\"input-instance\" \"prod\"}})"
+                    file)))))
+
+(ert-deftest cljbang-org-test-execute-inputs-reach-a-referenced-block ()
+  "A value block re-run for a later block's :var resolves its own
+references under the same binding, so the input travels the chain."
+  (cljbang-org-test--with-temp-fixture file "inputs.org"
+    ;; the value block's output ends in a newline, and so does the echo
+    (should (equal "on server-of-prod\n\n"
+                   (cljbang-org-test--eval
+                    "(cljbang.org/execute! %S \"uses-server\"
+                       {:inputs {\"input-instance\" \"prod\"}})"
+                    file)))))
+
+(ert-deftest cljbang-org-test-execute-inputs-reach-a-call-line ()
+  (cljbang-org-test--with-temp-fixture file "inputs.org"
+    (should (equal "server-of-prod\n"
+                   (cljbang-org-test--eval
+                    "(->> (cljbang.org/call-blocks %S)
+                          last
+                          (#(cljbang.org/execute! %S %% {:inputs {\"input-instance\" \"prod\"}})))"
+                    file file)))))
+
+(ert-deftest cljbang-org-test-execute-inputs-are-bound-for-one-call ()
+  "Nothing leaks: the next run without :inputs reads the file again,
+and the file itself was never edited."
+  (cljbang-org-test--with-temp-fixture file "inputs.org"
+    (cljbang-org-test--eval
+     "(cljbang.org/execute! %S \"server\" {:inputs {\"input-instance\" \"prod\"}})"
+     file)
+    (should (null cljbang-org--inputs))
+    (should (equal "server-of-staging\n"
+                   (cljbang-org-test--eval
+                    "(cljbang.org/execute! %S \"server\")" file)))
+    (should (string-match-p ": staging" (cljbang-org-test--text file)))
+    (should-not (string-match-p "prod" (cljbang-org-test--text file)))))
 
 ;;; Transclusion expansion
 
