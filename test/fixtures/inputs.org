@@ -18,3 +18,11 @@ echo "on $SERVER"
 #+end_src
 
 #+call: server(INSTANCE=input-instance)
+
+* Warns
+
+#+name: warns
+#+begin_src sh :results output
+echo warned
+echo a warning >&2
+#+end_src

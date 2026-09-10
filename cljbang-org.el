@@ -68,11 +68,30 @@ Built on demand by `cljbang-org--index-at' and bound afresh below, so
 one query numbers against one state of the buffer.")
 
 (defun cljbang-org--buffer (file)
-  "The buffer visiting FILE, opening it if need be."
-  (let ((buf (find-file-noselect (expand-file-name file))))
-    (with-current-buffer buf
-      (unless (derived-mode-p 'org-mode) (org-mode)))
-    buf))
+  "The buffer visiting FILE, opening it if need be.
+
+A buffer already visiting FILE follows the file: when the file changed
+on disk and the buffer has no edits, it is reread without a question,
+since a query answers for the file and a batch Emacs has nobody to ask.
+When the buffer has edits too, that is a conflict, and it is an error
+here rather than a prompt nobody can see: `cljbang-org-save!' or
+`cljbang-org-revert!' settles it."
+  (let* ((file (expand-file-name file))
+         (visiting (find-buffer-visiting file))
+         (stale (and visiting
+                     (not (verify-visited-file-modtime visiting)))))
+    (when (and stale (buffer-modified-p visiting))
+      (error "cljbang-org: %s changed on disk and its buffer has edits; save! or revert! first"
+             file))
+    (let ((buf (let ((revert-without-query '("")))
+                 (find-file-noselect file))))
+      (with-current-buffer buf
+        (unless (derived-mode-p 'org-mode) (org-mode))
+        ;; the reread swapped the text out from under org-element's cache,
+        ;; as `cljbang-org-revert!' does; throw the cache away the same way
+        (when (and stale (fboundp 'org-element-cache-reset))
+          (org-element-cache-reset)))
+      buf)))
 
 (defmacro cljbang-org--with-file (file &rest body)
   "Run BODY in the buffer visiting FILE, widened, preserving point."
@@ -1248,8 +1267,11 @@ Edits the visiting buffer only; `cljbang-org-save!' persists."
 
 ;;;###autoload
 (defun cljbang-org-revert! (file)
-  "Reload FILE from disk, discarding buffer edits; the file name."
-  (with-current-buffer (cljbang-org--buffer file)
+  "Reload FILE from disk, discarding buffer edits; the file name.
+The one way out of a buffer with edits behind a file that changed,
+so it takes the buffer as it is rather than asking for it."
+  (with-current-buffer (or (find-buffer-visiting (expand-file-name file))
+                           (cljbang-org--buffer file))
     (revert-buffer :ignore-auto :noconfirm)
     ;; `revert-buffer' swaps the text out from under org-element's cache,
     ;; which then never converges: the next scan of the buffer spins.

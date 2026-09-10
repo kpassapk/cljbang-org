@@ -88,6 +88,35 @@ visiting buffers and deletes the dir afterwards."
   (with-current-buffer (cljbang-org--buffer file)
     (buffer-substring-no-properties (point-min) (point-max))))
 
+;;; Buffer discipline
+
+(ert-deftest cljbang-org-test-query-follows-the-file-on-disk ()
+  "A file changed behind an unmodified buffer is reread, not asked about."
+  (cljbang-org-test--with-temp-fixture file "runnable.org"
+    (should (= 5 (cljbang-org-test--eval "(count (cljbang.org/headings %S))" file)))
+    (sleep-for 1.1)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-max))
+      (insert "\n* Appended\n")
+      (write-region (point-min) (point-max) file))
+    (should (= 6 (cljbang-org-test--eval "(count (cljbang.org/headings %S))" file)))))
+
+(ert-deftest cljbang-org-test-query-refuses-a-conflict ()
+  "Edits in the buffer and a change on disk: an error, never a prompt."
+  (cljbang-org-test--with-temp-fixture file "runnable.org"
+    (should (= 1 (cljbang-org-test--eval
+                  "(cljbang.org/set-todo! %S \"Failing\" \"DONE\")" file)))
+    (sleep-for 1.1)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-max))
+      (insert "\n* Appended\n")
+      (write-region (point-min) (point-max) file))
+    (should-error (cljbang-org-test--eval "(cljbang.org/headings %S)" file))
+    (cljbang-org-test--eval "(cljbang.org/revert! %S)" file)
+    (should (= 6 (cljbang-org-test--eval "(count (cljbang.org/headings %S))" file)))))
+
 ;;; Headings
 
 (ert-deftest cljbang-org-test-headings-count ()

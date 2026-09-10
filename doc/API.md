@@ -517,6 +517,8 @@ Save `file`'s visiting buffer if modified; the file name.
 `(org/revert! file)`
 
 Reload `file` from disk, discarding buffer edits; the file name.
+The one way out of a buffer with edits behind a file that changed,
+so it takes the buffer as it is rather than asking for it.
 
 ### org/tangle!
 
