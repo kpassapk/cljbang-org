@@ -543,27 +543,36 @@ an `execute!` that passed `:inputs`.
 
 `(org/execute! file & [selector opts])`
 
-Execute the runnable block in `file` named by `selector`; its result.
+Execute the runnable block in `file` named by `selector`; a result map.
 `selector` is a block name, a map with `:name` or `:index`, or `nil` for the
 file's only runnable block; a block map from a query is one.  `:index`
 counts src blocks and `#+call:` lines together, in file order.
 
-`opts`: {`:inputs` `{"input-instance" "staging"}`} binds values for
-the references the run resolves.  A `:var X=input-instance' on the
-block, on a block it pulls in through another ``:var``, or on a
+The result is `{:value v :exit n :stdout s :stderr e}`, always.  `:value`
+is what babel returned and put in the buffer; `:exit` the process's
+exit code, 0 when it did not report one; `:stdout` what the block had
+written when it exited, which is `:value` again for a block that ran
+clean; `:stderr` what it wrote there, or `nil`.  A non-zero exit is a
+result and not an error — org-babel would pop a buffer and hand back
+the partial output as if nothing happened, and a caller deciding
+whether to go on needs the code and the output both.  Output on
+stderr with a zero exit is not a failure either.
+
+It raises only when the block did not run: no block matches
+`selector`, the block is `:eval no', or the code signals an elisp
+error.
+
+OPTS: {:inputs {"input-instance" "staging"}} binds values for
+the references the run resolves.  A ``:var` X=input-instance' on the
+block, on a block it pulls in through another `:var`, or on a
 `#+call:` line, gets the bound value instead of what the file names,
-and the file is not edited to do it.  The names are what the ``:var``
+and the file is not edited to do it.  The names are what the `:var`
 writes after the `=`: a block name, an example's name.  The binding
 lasts for this one call.
 
-An effect, because a block can do anything and its results land in the
-buffer: [`org/save!`](#orgsave) writes them to disk, [`org/revert!`](#orgrevert)
-throws them away.
-
-A block that exits non-zero raises, carrying the exit code and what it
-wrote to stderr — org-babel would otherwise pop up a buffer, return
-the partial output, and let the caller think it worked.  Output on
-stderr with a zero exit is not a failure and does not raise.
+An effect, because a block can do anything and its results land in
+the buffer: [`org/save!`](#orgsave) writes them to disk,
+[`org/revert!`](#orgrevert) throws them away.
 
 ```clojure
 (org/execute! f)                    ; the only block
@@ -571,6 +580,7 @@ stderr with a zero exit is not a failure and does not raise.
 (org/execute! f {:index 2})         ; the third runnable block
 (->> (org/src-blocks f) (filter ...) first (org/execute! f))
 (org/execute! f "server" {:inputs {"input-instance" "staging"}})
+(:exit (org/execute! f "check"))     ;=> 3
 ```
 
 ## Shaping results

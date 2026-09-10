@@ -1400,10 +1400,24 @@ block it names, which is the one that has to be loaded."
 
 ;;;###autoload
 (defun cljbang-org-execute! (file &optional selector opts)
-  "Execute the runnable block in FILE named by SELECTOR; its result.
+  "Execute the runnable block in FILE named by SELECTOR; a result map.
 SELECTOR is a block name, a map with :name or :index, or nil for the
 file's only runnable block; a block map from a query is one.  :index
 counts src blocks and `#+call:' lines together, in file order.
+
+The result is {:value v :exit n :stdout s :stderr e}, always.  :value
+is what babel returned and put in the buffer; :exit the process's
+exit code, 0 when it did not report one; :stdout what the block had
+written when it exited, which is :value again for a block that ran
+clean; :stderr what it wrote there, or nil.  A non-zero exit is a
+result and not an error -- org-babel would pop a buffer and hand back
+the partial output as if nothing happened, and a caller deciding
+whether to go on needs the code and the output both.  Output on
+stderr with a zero exit is not a failure either.
+
+It raises only when the block did not run: no block matches
+SELECTOR, the block is `:eval no', or the code signals an elisp
+error.
 
 OPTS: {:inputs {\"input-instance\" \"staging\"}} binds values for
 the references the run resolves.  A `:var X=input-instance' on the
@@ -1413,40 +1427,56 @@ and the file is not edited to do it.  The names are what the `:var'
 writes after the `=': a block name, an example's name.  The binding
 lasts for this one call.
 
-An effect, because a block can do anything and its results land in the
-buffer: `cljbang-org-save!' writes them to disk, `cljbang-org-revert!'
-throws them away.
-
-A block that exits non-zero raises, carrying the exit code and what it
-wrote to stderr -- org-babel would otherwise pop up a buffer, return
-the partial output, and let the caller think it worked.  Output on
-stderr with a zero exit is not a failure and does not raise.
+An effect, because a block can do anything and its results land in
+the buffer: `cljbang-org-save!' writes them to disk,
+`cljbang-org-revert!' throws them away.
 
   (org/execute! f)                    ; the only block
   (org/execute! f \"deploy\")           ; the block named deploy
   (org/execute! f {:index 2})         ; the third runnable block
   (->> (org/src-blocks f) (filter ...) first (org/execute! f))
-  (org/execute! f \"server\" {:inputs {\"input-instance\" \"staging\"}})"
+  (org/execute! f \"server\" {:inputs {\"input-instance\" \"staging\"}})
+  (:exit (org/execute! f \"check\"))     ;=> 3"
   (cljbang-org--with-file file
     (cljbang-org--check-editable)
-    ;; `org-babel-eval' swallows a failing process: it pops an error
-    ;; buffer, `message's, and returns the partial output.  Turn that
-    ;; notification into a signal -- but only for a real failure, since
-    ;; stderr output with a zero exit notifies too.
-    (cl-letf* ((notify (symbol-function 'org-babel-eval-error-notify))
-               ((symbol-function 'org-babel-eval-error-notify)
-                (lambda (exit-code stderr)
-                  (if (or (not (numberp exit-code)) (> exit-code 0))
-                      (let ((stderr (string-trim (or stderr ""))))
-                        (error "cljbang-org: block exited with code %s%s"
-                               (if (numberp exit-code) exit-code "?")
-                               (if (string-empty-p stderr) ""
-                                 (concat ": " stderr))))
-                    (funcall notify exit-code stderr)))))
-      (let ((org-confirm-babel-evaluate nil)
-            (cljbang-org--inputs (cljbang-org--opt opts :inputs)))
-        (cljbang-org--goto-runnable file selector)
-        (cljbang-org--execute-at-point)))))
+    ;; `org-babel-eval' swallows a failing process: it notifies, pops an
+    ;; error buffer, and returns the partial output.  The exit code, the
+    ;; output and the error buffer meet in the one function under it,
+    ;; `org-babel--shell-command-on-region': it runs the process with the
+    ;; current buffer as its output and the error buffer as its stderr,
+    ;; and returns the code.  Record all three around that call and let
+    ;; babel finish; the notification then has nothing left to say and
+    ;; is silenced, its error buffer being of no use to a batch Emacs.
+    ;; Where the notification runs -- in the stderr buffer on org 9.5,
+    ;; in the output buffer from 9.6 -- stops mattering, and so does
+    ;; whether org notifies for stderr with a zero exit, which 9.5 does
+    ;; not.  The wrapper fires once per process, so a value block that
+    ;; fails on the way to the block asked for reports too; the first
+    ;; failure is the one kept.
+    (let (exit stdout stderr)
+      (cl-letf* ((on-region (symbol-function 'org-babel--shell-command-on-region))
+                 ((symbol-function 'org-babel--shell-command-on-region)
+                  (lambda (&rest args)
+                    (let* ((code (apply on-region args))
+                           (errbuf (seq-find #'bufferp args))
+                           (err (and errbuf (buffer-live-p errbuf)
+                                     (with-current-buffer errbuf (buffer-string)))))
+                      (when (and err (not (string-empty-p err)))
+                        (setq stderr (concat stderr err)))
+                      (when (and (or (not (numberp code)) (> code 0)) (not exit))
+                        (setq exit (if (numberp code) code 1)
+                              stdout (buffer-string)))
+                      code)))
+                 ((symbol-function 'org-babel-eval-error-notify) #'ignore))
+        (let* ((org-confirm-babel-evaluate nil)
+               (cljbang-org--inputs (cljbang-org--opt opts :inputs))
+               (value (progn (cljbang-org--goto-runnable file selector)
+                             (cljbang-org--execute-at-point))))
+          (cljbang-hash-map
+           :value value
+           :exit (or exit 0)
+           :stdout (if exit stdout value)
+           :stderr stderr))))))
 
 ;;; Shaping results
 
