@@ -3,7 +3,7 @@
 * Inputs
 
 #+name: input-instance
-: aly-andina
+: staging
 
 * Steps
 

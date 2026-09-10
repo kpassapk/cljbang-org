@@ -1383,7 +1383,7 @@ SELECTOR is a block name, a map with :name or :index, or nil for the
 file's only runnable block; a block map from a query is one.  :index
 counts src blocks and `#+call:' lines together, in file order.
 
-OPTS: {:inputs {\"input-instance\" \"aly-andina\"}} binds values for
+OPTS: {:inputs {\"input-instance\" \"staging\"}} binds values for
 the references the run resolves.  A `:var X=input-instance' on the
 block, on a block it pulls in through another `:var', or on a
 `#+call:' line, gets the bound value instead of what the file names,
@@ -1404,7 +1404,7 @@ stderr with a zero exit is not a failure and does not raise.
   (org/execute! f \"deploy\")           ; the block named deploy
   (org/execute! f {:index 2})         ; the third runnable block
   (->> (org/src-blocks f) (filter ...) first (org/execute! f))
-  (org/execute! f \"server\" {:inputs {\"input-instance\" \"aly-andina\"}})"
+  (org/execute! f \"server\" {:inputs {\"input-instance\" \"staging\"}})"
   (cljbang-org--with-file file
     (cljbang-org--check-editable)
     ;; `org-babel-eval' swallows a failing process: it pops an error
