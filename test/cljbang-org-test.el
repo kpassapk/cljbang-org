@@ -233,6 +233,21 @@ lines, and cannot count buffer positions."
     (should (equal "Some prose.\n"
                    (cljbang-org-test--lines file 45 45)))))
 
+(ert-deftest cljbang-org-test-headings-own-lines-from-line-starts ()
+  "A heading's own lines, as the file writes them, run from its
+:line-start to the next heading's minus 1.  That keeps the property
+drawer, which :body leaves out, so a changed property shows."
+  (let* ((file (cljbang-org-test--fixture "drawers.org"))
+         (starts (cljbang-org-test--eval
+                  "(mapv :line-start (cljbang.org/headings %S))" file))
+         (text (cljbang-org-test--lines file
+                                        (aref starts 0)
+                                        (1- (aref starts 1)))))
+    (should (equal [3 20 38] starts))
+    (should (string-prefix-p "* Step one\n:PROPERTIES:\n:STEP:     1\n:END:\n"
+                             text))
+    (should-not (string-match-p "Step two" text))))
+
 (ert-deftest cljbang-org-test-src-blocks-line-range ()
   "A block's range frames it: `#+begin_src' on the first line and
 `#+end_src' on the last, so the lines are the block and nothing else."

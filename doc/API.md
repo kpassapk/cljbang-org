@@ -88,6 +88,16 @@ subtree, so a heading's span contains its children's: an outline read
 back a section at a time is `:line-start` to the next sibling's, and
 the lines a heading owns alone are its own down to its first child's.
 
+Those lines are the heading as the file writes it, planning line and
+drawers included, which `:body` leaves out: they run from a heading's
+`:line-start` to the next heading's `:line-start` minus 1.
+
+```clojure
+(let [hs (org/headings f)]
+  (map (fn [h next] [(:title h) (dec (:line-start next))])
+       hs (rest hs)))
+```
+
 `opts`: `{:body? true}` adds each heading's own text as `:body` — its own
 prose, with the planning line, the drawers and anything belonging to a
 subheading left out; `{:expand-transclusions? true}` to scan transcluded
