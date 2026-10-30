@@ -497,9 +497,10 @@ The span runs from the `#+begin_src' line to the `#+end_src' line, as
 positions and again as inclusive lines.  The :results- keys are the
 span of the block's results, from its `#+RESULTS:' line, in the same
 two forms; they are nil for a block with none, so a caller can tell a
-heading whose only change is its results.  A named block's
-`#+RESULTS: name' may sit away from it and is still found, but not
-under :under when the narrowing leaves it out: then they are nil.
+heading whose only change is its results.  A named block's results
+may sit away from it, under a `#+RESULTS:' line that carries its name,
+and are still found, but not under :under when the narrowing leaves
+them out: then the keys are nil.
 
 OPTS: {:under selector} restricts to every matching subtree, in
 document order; {:expand-transclusions? true} scans transcluded content
