@@ -1175,5 +1175,30 @@ and the file itself was never edited."
                            [\"caddy.service\" \"dbus.service\"]
                            [[\"caddy.service\"] [\"dbus.service\"]]]))")))
 
+(ert-deftest cljbang-org-test-text-source ()
+  "A {:text s} source answers like a file, visits nothing, runs no hooks."
+  (let* ((text "#+TITLE: T\n* TODO One :a:\n#+begin_src sh\necho\n#+end_src\n* Two\n")
+         (hooked nil)
+         (bufs (buffer-list))
+         (org-mode-hook (list (lambda () (setq hooked t)))))
+    (should (equal ["One" "Two"]
+                   (cljbang-org-test--eval
+                    "(mapv :title (cljbang.org/headings {:text %S}))" text)))
+    (should (equal [nil nil]
+                   (cljbang-org-test--eval
+                    "(mapv :file (cljbang.org/headings {:text %S}))" text)))
+    (should (= 1 (length (cljbang-org-test--eval
+                          "(cljbang.org/src-blocks {:text %S})" text))))
+    (should-not hooked)
+    (should (equal bufs (buffer-list)))))
+
+(ert-deftest cljbang-org-test-text-source-refuses ()
+  "Effects and transclusions need a file."
+  (should-error (cljbang-org-test--eval
+                 "(cljbang.org/set-todo! {:text \"* A\\n\"} \"A\" \"DONE\")"))
+  (should-error (cljbang-org-test--eval
+                 "(cljbang.org/headings {:text \"* A\\n\"} {:expand-transclusions? true})"))
+  (should-error (cljbang-org-test--eval "(cljbang.org/headings {:text 1})")))
+
 (provide 'cljbang-org-test)
 ;;; cljbang-org-test.el ends here

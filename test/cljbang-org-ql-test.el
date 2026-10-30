@@ -102,5 +102,13 @@ heading map it returns is a selector cljbang.org's effects accept."
                              {:expand-transclusions? true})"
                           file))))))
 
+(ert-deftest cljbang-org-ql-test-text-source ()
+  (skip-unless (require 'org-ql nil t))
+  (require 'cljbang-org-ql)
+  (should (equal ["B"]
+                 (cljbang-org-test--eval
+                  "(mapv :title (cljbang.org.ql/select {:text %S} '(heading \"B\")))"
+                  "* A\n* B\n"))))
+
 (provide 'cljbang-org-ql-test)
 ;;; cljbang-org-ql-test.el ends here

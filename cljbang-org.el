@@ -93,15 +93,53 @@ here rather than a prompt nobody can see: `cljbang-org-save!' or
           (org-element-cache-reset)))
       buf)))
 
+(defvar-local cljbang-org--text-buffer nil
+  "Non-nil in the temporary buffer a text query runs in.
+Effects and transclusions check this: there is no file behind it.")
+
+(defun cljbang-org--text-source (file)
+  "The string of FILE when it is a text source, {:text \"...\"}, else nil."
+  (and (hash-table-p file)
+       (let ((text (cljbang-get file :text)))
+         (unless (stringp text)
+           (error "cljbang-org: a map source needs a string :text"))
+         text)))
+
+(defun cljbang-org--call-with-source (source fn)
+  "Call FN in the buffer for SOURCE, a file name or {:text STRING}.
+A text runs in a temporary org buffer that visits nothing and is killed
+after; `delay-mode-hooks' and a nil `org-mode-hook' keep the operator's
+hooks out of it."
+  (let ((text (cljbang-org--text-source source)))
+    (if (not text)
+        (with-current-buffer (cljbang-org--buffer source)
+          (funcall fn))
+      ;; not `with-temp-buffer': its name starts with a space, and org-ql
+      ;; skips such buffers as hidden
+      (let ((buf (generate-new-buffer "*cljbang-org text*" t)))
+        (unwind-protect
+            (with-current-buffer buf
+              (insert text)
+              (let ((org-mode-hook nil))
+                (delay-mode-hooks (org-mode)))
+              (setq cljbang-org--text-buffer t)
+              (goto-char (point-min))
+              (funcall fn))
+          (kill-buffer buf))))))
+
 (defmacro cljbang-org--with-file (file &rest body)
-  "Run BODY in the buffer visiting FILE, widened, preserving point."
+  "Run BODY in the buffer visiting FILE, widened, preserving point.
+FILE may instead be {:text STRING}: BODY then runs in a temporary org
+buffer holding STRING, which visits nothing."
   (declare (indent 1))
-  `(with-current-buffer (cljbang-org--buffer ,file)
-     (save-excursion
-       (save-restriction
-         (widen)
-         (let ((cljbang-org--index-of nil))
-           ,@body)))))
+  `(cljbang-org--call-with-source
+    ,file
+    (lambda ()
+      (save-excursion
+        (save-restriction
+          (widen)
+          (let ((cljbang-org--index-of nil))
+            ,@body))))))
 
 (defun cljbang-org--str (s)
   "S without its text properties, or nil."
@@ -132,6 +170,8 @@ and the buffer's modified flag restored, whatever BODY does."
   (declare (indent 1))
   `(if (not ,expand)
        (progn ,@body)
+     (when cljbang-org--text-buffer
+       (error "cljbang-org: :expand-transclusions? needs a file; a text has nothing to resolve links against"))
      (unless (require 'org-transclusion nil t)
        (error "cljbang-org: :expand-transclusions? needs org-transclusion"))
      (let ((cljbang-org--was-modified (buffer-modified-p)))
@@ -777,6 +817,8 @@ There is no :under: a keyword is the file's, not a subtree's."
 ;; buffer does not move the headings still to visit.
 
 (defun cljbang-org--check-editable ()
+  (when cljbang-org--text-buffer
+    (error "cljbang-org: refusing to edit a text source; effects need a file"))
   (when cljbang-org--transcluded
     (error "cljbang-org: refusing to edit while transclusions are expanded")))
 
@@ -1283,6 +1325,7 @@ so it takes the buffer as it is rather than asking for it."
 (defun cljbang-org-tangle! (file)
   "Tangle FILE; the tangled file names as a vector."
   (cljbang-org--with-file file
+    (cljbang-org--check-editable)
     (apply #'vector (org-babel-tangle))))
 
 ;;; Executing a block

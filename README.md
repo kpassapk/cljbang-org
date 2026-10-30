@@ -41,6 +41,10 @@ Snippets in the following sections use these namespaces:
 
 You can run this code in emacs using the `clj!` macro, or put it in a `.clj` file and use `cljbang-load-file`.
 
+Every query takes `{:text "..."}` where it takes a file name: the string is
+read in a temporary org buffer that visits nothing and runs no hooks. `:file`
+is nil in its maps; effects and `:expand-transclusions?` are errors on a text.
+
 See the [API Documentation][api] for more, on [the site][site] or in the
 repository. It is generated from the docstrings by `make doc`, so it says what
 the code says.
