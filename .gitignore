@@ -1,6 +1,7 @@
 # Dependencies `make deps` fetches
 .deps/
-
+/.clj-kondo/.cache/*
+/.lsp/.cache/*
 # Personal make overrides: CLJBANG_DIR, ELPA, EMACS
 local.mk
 
