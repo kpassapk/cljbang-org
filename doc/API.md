@@ -126,10 +126,16 @@ the indices stay put.
 
 Src blocks in `file` as a vector of block maps.
 A block map holds `:type` `:language` `:name` `:headers` `:body` `:index` `:begin`
-`:end` `:line-start` `:line-end` `:file`.  `:headers` is the resolved header-arg
+`:end` `:line-start` `:line-end` `:results-begin` `:results-end`
+`:results-line-start` `:results-line-end` `:file`.  `:headers` is the resolved header-arg
 map, defaults included, so an untangled block carries `:tangle` `"no"`.
 The span runs from the `#+begin_src` line to the `#+end_src` line, as
-positions and again as inclusive lines.
+positions and again as inclusive lines.  The `:results-` keys are the
+span of the block's results, from its `#+RESULTS:` line, in the same
+two forms; they are nil for a block with none, so a caller can tell a
+heading whose only change is its results.  A named block's
+`#+RESULTS: name` may sit away from it and is still found, but not
+under `:under` when the narrowing leaves it out: then they are nil.
 
 `opts`: `{:under selector}` restricts to every matching subtree, in
 document order; `{:expand-transclusions? true}` scans transcluded content
@@ -147,9 +153,12 @@ names the block under `:under` — but not under
 
 The `#+call:` lines in `file` as a vector of call maps.
 A call map holds `:type` `:name` `:call` `:arguments` `:value` `:index` `:begin` `:end`
-`:line-start` `:line-end` `:file`.  `:call` names the block being invoked and
+`:line-start` `:line-end` `:results-begin` `:results-end` `:results-line-start`
+`:results-line-end` `:file`.  `:call` names the block being invoked and
 `:arguments` the text inside its parens; `:value` is the call verbatim.  A
-call is one line, so `:line-start` and `:line-end` are that line.
+call is one line, so `:line-start` and `:line-end` are that line.  The
+`:results-` keys are the span of its results as [`org/src-blocks`](#orgsrc-blocks)
+gives them, nil when it has none.
 
 Takes the same opts [`org/src-blocks`](#orgsrc-blocks) does.
 

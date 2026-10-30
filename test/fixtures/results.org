@@ -1,0 +1,14 @@
+#+TITLE: Results
+
+* Results
+
+#+begin_src sh :results output
+echo hi
+#+end_src
+
+#+RESULTS:
+: hi
+
+#+begin_src sh :results output
+echo none
+#+end_src

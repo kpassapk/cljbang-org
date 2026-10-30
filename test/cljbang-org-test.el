@@ -262,6 +262,21 @@ drawer, which :body leaves out, so a changed property shows."
     (should (string-prefix-p "#+begin_src systemd" text))
     (should (string-suffix-p "#+end_src\n" text))))
 
+(ert-deftest cljbang-org-test-src-blocks-results-span ()
+  "A block's results span runs from its `#+RESULTS:' line to the last
+line of what it holds; a block with none has nil for every key."
+  (should (equal [[9 10] [nil nil]]
+                 (cljbang-org-test--eval
+                  "(->> (cljbang.org/src-blocks %S)
+                        (mapv #(vector (:results-line-start %%)
+                                       (:results-line-end %%))))"
+                  (cljbang-org-test--fixture "results.org"))))
+  (should (equal [nil nil]
+                 (cljbang-org-test--eval
+                  "(let [b (second (cljbang.org/src-blocks %S))]
+                     [(:results-begin b) (:results-end b)])"
+                  (cljbang-org-test--fixture "results.org")))))
+
 (ert-deftest cljbang-org-test-call-blocks-line-range ()
   "A call is one line, and its range is that line."
   (should (equal [[22 22]]

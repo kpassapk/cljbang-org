@@ -426,12 +426,32 @@ widened buffer, so an index does not depend on what a query narrowed to."
 
 ;;; Source blocks
 
+(defun cljbang-org--results-span ()
+  "Span of the results of the block or `#+call:' line at point, or nil.
+A list (BEGIN END LINE-START LINE-END): BEGIN is the start of the
+`#+RESULTS:' line and END where `org-babel-result-end' puts the end of
+what it holds, with the lines inclusive as for any other span.  Nil
+when the block has no results.  A named block's `#+RESULTS: name' is
+found wherever it sits in the accessible portion, so under a narrowing
+that leaves it out the answer is nil."
+  (save-excursion
+    (let ((begin (org-babel-where-is-src-block-result)))
+      (when begin
+        (goto-char begin)
+        (let ((end (org-babel-result-end)))
+          (list begin end
+                (cljbang-org--line-of begin)
+                (cljbang-org--last-line-of begin end)))))))
+
 (defun cljbang-org--block-at-point ()
   "Src block at point as a map: :type :language :name :headers :body
-:index :begin :end :line-start :line-end :file.  :headers is the
+:index :begin :end :line-start :line-end :results-begin :results-end
+:results-line-start :results-line-end :file.  :headers is the
 resolved header-arg map, defaults included, so an untangled block
 carries :tangle \"no\".  The span runs from the `#+begin_src' line to
-the `#+end_src' line, as positions and again as inclusive lines."
+the `#+end_src' line, as positions and again as inclusive lines.  The
+:results- keys give the span of the block's results the same way, from
+its `#+RESULTS:' line, and are all nil when it has none."
   (let* ((info (org-babel-get-src-block-info 'light))
          (headers (let ((h (make-hash-table :test #'equal)))
                     (dolist (kv (nth 2 info) h)
@@ -439,7 +459,8 @@ the `#+end_src' line, as positions and again as inclusive lines."
          (begin (point))
          (end (save-excursion
                 (re-search-forward "^[ \t]*#\\+end_src" nil t)
-                (line-end-position))))
+                (line-end-position)))
+         (results (cljbang-org--results-span)))
     (cljbang-hash-map
      :type :src
      :language (nth 0 info)
@@ -451,6 +472,10 @@ the `#+end_src' line, as positions and again as inclusive lines."
      :end end
      :line-start (cljbang-org--line-of begin)
      :line-end (cljbang-org--last-line-of begin end)
+     :results-begin (nth 0 results)
+     :results-end (nth 1 results)
+     :results-line-start (nth 2 results)
+     :results-line-end (nth 3 results)
      :file (buffer-file-name))))
 
 (defun cljbang-org--collect-blocks ()
@@ -465,10 +490,16 @@ the `#+end_src' line, as positions and again as inclusive lines."
 (defun cljbang-org-src-blocks (file &optional opts)
   "Src blocks in FILE as a vector of block maps.
 A block map holds :type :language :name :headers :body :index :begin
-:end :line-start :line-end :file.  :headers is the resolved header-arg
+:end :line-start :line-end :results-begin :results-end
+:results-line-start :results-line-end :file.  :headers is the resolved header-arg
 map, defaults included, so an untangled block carries :tangle \"no\".
 The span runs from the `#+begin_src' line to the `#+end_src' line, as
-positions and again as inclusive lines.
+positions and again as inclusive lines.  The :results- keys are the
+span of the block's results, from its `#+RESULTS:' line, in the same
+two forms; they are nil for a block with none, so a caller can tell a
+heading whose only change is its results.  A named block's
+`#+RESULTS: name' may sit away from it and is still found, but not
+under :under when the narrowing leaves it out: then they are nil.
 
 OPTS: {:under selector} restricts to every matching subtree, in
 document order; {:expand-transclusions? true} scans transcluded content
@@ -488,7 +519,10 @@ being invoked and :arguments the text inside its parens; :value is the
 call verbatim, e.g. \"deploy(HOST=web1)\".  A call is one line, so
 :line-start and :line-end are that line."
   (let* ((begin (cljbang-org--call-begin el))
-         (end (save-excursion (goto-char begin) (line-end-position))))
+         (end (save-excursion (goto-char begin) (line-end-position)))
+         (results (save-excursion
+                    (goto-char begin)
+                    (cljbang-org--results-span))))
     (cljbang-hash-map
      :type :call
      :name (cljbang-org--str (org-element-property :name el))
@@ -500,6 +534,10 @@ call verbatim, e.g. \"deploy(HOST=web1)\".  A call is one line, so
      :end end
      :line-start (cljbang-org--line-of begin)
      :line-end (cljbang-org--last-line-of begin end)
+     :results-begin (nth 0 results)
+     :results-end (nth 1 results)
+     :results-line-start (nth 2 results)
+     :results-line-end (nth 3 results)
      :file (buffer-file-name))))
 
 (defun cljbang-org--collect-calls ()
@@ -512,9 +550,12 @@ call verbatim, e.g. \"deploy(HOST=web1)\".  A call is one line, so
 (defun cljbang-org-call-blocks (file &optional opts)
   "The `#+call:' lines in FILE as a vector of call maps.
 A call map holds :type :name :call :arguments :value :index :begin :end
-:line-start :line-end :file.  :call names the block being invoked and
+:line-start :line-end :results-begin :results-end :results-line-start
+:results-line-end :file.  :call names the block being invoked and
 :arguments the text inside its parens; :value is the call verbatim.  A
-call is one line, so :line-start and :line-end are that line.
+call is one line, so :line-start and :line-end are that line.  The
+:results- keys are the span of its results as `cljbang-org-src-blocks'
+gives them, nil when it has none.
 
 Takes the same opts `cljbang-org-src-blocks' does.
 
